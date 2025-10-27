@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "AI Chat Knowledge Organizer",
+  "version": "0.1.0",
+  "description": "Organiza conversaciones de IA capturando mensajes y generando resumenes estructurados con Gemini.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*/*"
+      ],
+      "js": [
+        "src/contentScript.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": {
+    "default_path": "src/sidebar.html"
+  },
+  "action": {
+    "default_title": "AI Chat Knowledge Organizer"
+  }
+}
