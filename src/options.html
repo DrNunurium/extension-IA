@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Configuración Gemini API</title>
+    <style>
+      body { font-family: system-ui, Arial, sans-serif; margin: 16px; }
+      form { display: flex; flex-direction: column; gap: 12px; max-width: 380px; }
+      input { padding: 8px; border-radius: 6px; border: 1px solid #ccc; font-size: 14px; }
+      button { padding: 8px 12px; border-radius: 6px; border: 1px solid #ccc; cursor: pointer; }
+      #status { margin-top: 12px; color: #2f855a; }
+      #status.error { color: #c53030; }
+    </style>
+  </head>
+  <body>
+    <h1>Gemini API</h1>
+    <p>Pega tu clave de API de Gemini (Google AI Studio). Se almacenará localmente en este navegador.</p>
+    <form id="apiKeyForm">
+      <label for="apiKey">Clave de API</label>
+      <input id="apiKey" type="password" autocomplete="off" placeholder="AIza..." required />
+      <div style="display:flex; gap:8px;">
+        <button type="submit">Guardar</button>
+        <button type="button" id="clearKey">Borrar clave</button>
+      </div>
+    </form>
+    <p id="status"></p>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

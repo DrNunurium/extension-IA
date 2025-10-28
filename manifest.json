@@ -9,8 +9,9 @@
     "scripting"
   ],
   "host_permissions": [
-    "https://*/*",
-    "http://*/*"
+    "https://chat.openai.com/*",
+    "https://gemini.google.com/*",
+    "https://generativelanguage.googleapis.com/*"
   ],
   "background": {
     "service_worker": "src/background.js",
@@ -19,7 +20,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://*/*"
+        "https://chat.openai.com/*",
+        "https://gemini.google.com/*"
       ],
       "js": [
         "src/contentScript.js"
@@ -27,11 +29,12 @@
       "run_at": "document_idle"
     }
   ],
-  "side_panel": {
-    "default_path": "src/sidebar.html"
-  },
   "action": {
     "default_title": "AI Chat Knowledge Organizer",
     "default_popup": "src/popup.html"
+  },
+  "options_ui": {
+    "page": "src/options.html",
+    "open_in_tab": false
   }
 }
