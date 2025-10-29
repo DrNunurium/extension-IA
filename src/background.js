@@ -1,6 +1,25 @@
 const chromeApi = globalThis.chrome;
-const GEMINI_MODEL = 'models/gemini-1.5-flash-latest';
-const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/${GEMINI_MODEL}:generateContent`;
+// The model name can vary by API availability. Use a sensible default but allow
+// overriding via `chrome.storage.local` key `geminiModel` if needed.
+// Use Gemini 2.5 flash model by default as requested.
+const DEFAULT_GEMINI_MODEL = 'models/gemini-2.5-flash';
+const GL_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+async function getModelName() {
+    try {
+        const data = await new Promise((resolve) => chromeApi.storage.local.get(['geminiModel'], resolve));
+        const m = data?.geminiModel;
+        if (typeof m === 'string' && m.trim())
+            return m.trim();
+    }
+    catch (e) {
+        // ignore and fallback
+    }
+    return DEFAULT_GEMINI_MODEL;
+}
+function buildEndpointForModel(modelName, apiKey) {
+    // modelName is expected like 'models/xyz'. Build the generateContent endpoint.
+    return `${GL_API_BASE}/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
+}
 if (!chromeApi?.runtime?.onMessage) {
     console.warn('Chrome runtime API is not available in this context.');
 }
@@ -318,47 +337,110 @@ async function callGeminiMindMap(apiKey, conversationText) {
     { "desde": "string", "hacia": "string", "tipo": "string" }
   ]
 }`;
-    const prompt = `Analiza la siguiente conversación de chat sobre un proyecto. Tu tarea es generar la estructura de un mapa conceptual. Identifica los conceptos centrales y las relaciones lógicas entre ellos. Devuelve el resultado como un único objeto JSON que se ajuste estrictamente al esquema proporcionado. El 'titulo_central' debe ser el tema principal de toda la conversación. Asegúrate de incluir los identificadores (ID) correctos en las relaciones para que los nodos puedan conectarse correctamente. Texto de la conversación: ${conversationText}`;
-    const body = {
-        contents: [
-            {
-                role: 'user',
-                parts: [{ text: prompt }]
+    // Build a prompt that asks clearly for JSON output. Keep it reasonably short.
+    let basePrompt = `Analiza la siguiente conversación de chat sobre un proyecto. Genera un único objeto JSON que cumpla con este esquema: ${schemaDescription}. El campo \"titulo_central\" debe resumir el tema principal. Incluye referencias a los fragmentos usando sus IDs cuando proceda. Texto de la conversación:\n${conversationText}`;
+    // Helper: recursively collect string values from the API response to find text candidates
+    function collectStringValues(obj, acc) {
+        if (obj == null)
+            return;
+        if (typeof obj === 'string') {
+            acc.push(obj);
+            return;
+        }
+        if (Array.isArray(obj)) {
+            for (const it of obj)
+                collectStringValues(it, acc);
+            return;
+        }
+        if (typeof obj === 'object') {
+            for (const k of Object.keys(obj))
+                collectStringValues(obj[k], acc);
+        }
+    }
+    async function extractTextFromResponse(respObj) {
+        // Preferred path used previously
+        try {
+            const cand = respObj?.candidates?.[0];
+            const partsText = cand?.content?.parts?.[0]?.text;
+            if (typeof partsText === 'string' && partsText.trim().length > 0)
+                return partsText;
+        }
+        catch (_) { }
+        // Fallback: collect strings found anywhere and pick the most JSON-like
+        const acc = [];
+        collectStringValues(respObj, acc);
+        if (!acc.length)
+            return null;
+        // Prefer strings containing `{` or ```json
+        const jsonLike = acc.find(s => /```\s*json|\{\s*"/.test(s));
+        if (jsonLike && typeof jsonLike === 'string')
+            return jsonLike;
+        // Otherwise choose the longest string (likely main body)
+        acc.sort((a, b) => b.length - a.length);
+        return acc[0] || null;
+    }
+    // We'll attempt up to 2 tries: initial prompt and then a stricter prompt wrapped in triple backticks
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const prompt = attempt === 0
+            ? basePrompt
+            : 'Por favor DEVUELVE SOLO EL OBJETO JSON entre triple backticks con etiqueta json. \n```json\n' + basePrompt + '\n```\nNada más.';
+        const body = {
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            generationConfig: {
+                temperature: 0.0,
+                topP: 0.8,
+                topK: 40,
+                maxOutputTokens: 2048
+            },
+            safetySettings: []
+        };
+        // log conversationText for debugging if something goes wrong
+        try {
+            console.debug('Calling Gemini with conversationText:', conversationText.slice(0, 2000));
+        }
+        catch (_) { }
+        const modelName = await getModelName();
+        const endpoint = buildEndpointForModel(modelName, apiKey);
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Gemini API error: ${response.status} ${errorText}`);
+        }
+        const data = await response.json();
+        const rawText = await extractTextFromResponse(data);
+        if (!rawText || typeof rawText !== 'string' || !rawText.trim()) {
+            // if last attempt, throw an informative error with a bit of the response
+            if (attempt === 1) {
+                console.error('Gemini returned no text-like content. Full response:', data);
+                throw new Error('La respuesta de Gemini no contiene texto.');
             }
-        ],
-        generationConfig: {
-            temperature: 0.3,
-            topP: 0.8,
-            topK: 40,
-            maxOutputTokens: 2048
-        },
-        safetySettings: [],
-        responseMimeType: 'application/json'
-    };
-    const response = await fetch(`${GEMINI_ENDPOINT}?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-    });
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Gemini API error: ${response.status} ${errorText}`);
+            // otherwise retry with stricter prompt
+            console.debug('No usable text found in Gemini response, retrying with stricter prompt...');
+            continue;
+        }
+        try {
+            const json = parseJsonStrict(rawText);
+            if (isValidMindMap(json))
+                return json;
+            // If invalid, log and try stricter prompt once
+            console.debug('Parsed JSON did not validate against schema. Attempt:', attempt, 'parsed:', json);
+            if (attempt === 1)
+                throw new Error('La respuesta no cumple con el esquema esperado.');
+            // else continue to next attempt
+        }
+        catch (err) {
+            console.error('Failed to parse Gemini JSON on attempt', attempt, err, rawText);
+            if (attempt === 1)
+                throw err;
+            // fallback: try again with stricter prompt
+        }
     }
-    const data = await response.json();
-    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!rawText || typeof rawText !== 'string') {
-        throw new Error('La respuesta de Gemini no contiene texto.');
-    }
-    try {
-        const json = parseJsonStrict(rawText);
-        if (isValidMindMap(json))
-            return json;
-        throw new Error('La respuesta no cumple con el esquema esperado.');
-    }
-    catch (err) {
-        console.error('Failed to parse Gemini JSON', err, rawText);
-        throw err;
-    }
+    // unreachable normally
+    return null;
 }
 function parseJsonStrict(raw) {
     try {

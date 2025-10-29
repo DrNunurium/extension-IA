@@ -175,63 +175,172 @@ function injectSaveButton(messageEl) {
         messageEl.dataset.sourceId = sourceId;
     }
     catch (_) { }
-    // find block-level paragraph candidates inside the message
-    const paragraphSelectors = ['p', 'div > p', 'li'];
-    const paragraphs = [];
-    for (const sel of paragraphSelectors) {
-        try {
-            const nodes = Array.from(messageEl.querySelectorAll(sel));
-            for (const n of nodes) {
-                const txt = (n.textContent || '').trim();
-                if (txt.length >= MIN_PARAGRAPH_LENGTH && !isInteractive(n))
-                    paragraphs.push(n);
+    // We'll look for headings, list items (key points) and paragraphs. Buttons attached to
+    // a heading will save the heading + following content until the next heading of same/higher level.
+    // Buttons on a list-item will save that item (and nested content) until the next sibling list-item.
+    // Paragraph buttons save only the paragraph.
+    const headingNodes = Array.from(messageEl.querySelectorAll('h1,h2,h3,h4,h5,h6')).filter(n => (n.textContent || '').trim().length >= MIN_PARAGRAPH_LENGTH && !isInteractive(n));
+    const listItemNodes = Array.from(messageEl.querySelectorAll('li')).filter(n => (n.textContent || '').trim().length >= MIN_PARAGRAPH_LENGTH && !isInteractive(n));
+    const paragraphNodes = Array.from(messageEl.querySelectorAll('p, div > p, div')).filter(n => (n.textContent || '').trim().length >= MIN_PARAGRAPH_LENGTH && !isInteractive(n));
+    // Heuristic: detect "pseudo-headings" inside paragraphs or divs that start sections, e.g. "1. Obtención" or emoji bullets like "🔑 1. ..."
+    const pseudoHeadingRegex = /^\s*(?:[\u2700-\u27BF\u1F300-\u1F6FF\u1F900-\u1F9FF]|\*|\-|\d+\.|\d+\))\s+.{3,120}/;
+    const extraPseudoHeadings = [];
+    for (const p of paragraphNodes) {
+        const txt = (p.textContent || '').trim();
+        if (pseudoHeadingRegex.test(txt) || (/^\d+\./.test(txt) && txt.length < 140)) {
+            try {
+                p.dataset.pseudoHeading = 'true';
             }
+            catch (_) { }
+            extraPseudoHeadings.push(p);
         }
-        catch (_) { /* ignore bad selectors */ }
     }
-    // If we found no paragraphs, fall back to using the message element itself (single button)
-    if (paragraphs.length === 0) {
-        if (seenElements.has(messageEl))
-            return;
-        seenElements.add(messageEl);
-        // capture message text before injecting the button so UI elements don't pollute it
-        const messageText = (messageEl.textContent || '').trim();
-        const btn = createFloatingButton();
-        btn.addEventListener('click', (e) => {
+    // include pseudo-headings into headingNodes so they get section capture behavior
+    extraPseudoHeadings.forEach(n => headingNodes.push(n));
+    // Merge candidates with ordering: headings first, then list items, then paragraphs (avoid duplicates)
+    const candidates = [];
+    const addIfUnique = (n) => { if (!candidates.includes(n))
+        candidates.push(n); };
+    headingNodes.forEach(addIfUnique);
+    listItemNodes.forEach(addIfUnique);
+    paragraphNodes.forEach(addIfUnique);
+    // Always add a small "save whole response" button near the top of the message so
+    // users can easily save the entire response irrespective of per-paragraph buttons.
+    if (!messageEl.querySelector(`.${BUTTON_CLASS}[data-scope="message"]`)) {
+        const topBtn = createFloatingButton('message');
+        try {
+            topBtn.dataset.scope = 'message';
+        }
+        catch (_) { }
+        topBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            sendSaveMessage({ type: 'SAVE_CHAT_DATA', payload: { sourceId, messageText, pageUrl: window.location.href } }, btn);
+            const messageText = (messageEl.textContent || '').trim();
+            // use message-level source id (one per message)
+            sendSaveMessage({ type: 'SAVE_CHAT_DATA', payload: { sourceId, messageText, pageUrl: window.location.href } }, topBtn);
         });
         messageEl.style.position = messageEl.style.position || 'relative';
-        messageEl.appendChild(btn);
-        return;
+        // insert before first child so it's visually above the message
+        if (messageEl.firstChild)
+            messageEl.insertBefore(topBtn, messageEl.firstChild);
+        else
+            messageEl.appendChild(topBtn);
     }
-    paragraphs.forEach((p, idx) => {
-        if (seenElements.has(p))
+    // If no finer-grained candidates found, we still keep the top-level button and exit
+    if (candidates.length === 0)
+        return;
+    // Helper: collect fragment text depending on node type
+    function collectFragmentText(start) {
+        const tag = start.tagName.toUpperCase();
+        if (/^H[1-6]$/.test(tag) || (start.dataset && start.dataset.pseudoHeading === 'true')) {
+            // heading: collect until next heading of same or higher level
+            const level = /^H[1-6]$/.test(tag) ? parseInt(tag[1], 10) : 2; // pseudo-heading treated at level 2
+            const pieces = [];
+            pieces.push((start.textContent || '').trim());
+            let sib = start.nextElementSibling;
+            while (sib && messageEl.contains(sib)) {
+                const sTag = sib.tagName.toUpperCase();
+                // stop when next real heading of same or higher level is encountered
+                if (/^H[1-6]$/.test(sTag)) {
+                    const sLevel = parseInt(sTag[1], 10);
+                    if (sLevel <= level)
+                        break; // stop at same or higher-level heading
+                }
+                pieces.push((sib.textContent || '').trim());
+                sib = sib.nextElementSibling;
+            }
+            return pieces.filter(Boolean).join('\n\n').trim();
+        }
+        if (tag === 'LI') {
+            // list item: collect this li and next sibling lis until next li at same parent
+            const pieces = [];
+            const parent = start.parentElement;
+            if (!parent)
+                return (start.textContent || '').trim();
+            let include = false;
+            for (const child of Array.from(parent.children)) {
+                const el = child;
+                if (el === start)
+                    include = true;
+                if (!include)
+                    continue;
+                // stop if we hit another li that is different and we already included at least one
+                if (el.tagName.toUpperCase() === 'LI' && el !== start && pieces.length > 0)
+                    break;
+                pieces.push((el.textContent || '').trim());
+                // also include following siblings that are not LI but are inside the same container until next LI
+            }
+            // Also attempt to include following siblings of the list (e.g., paragraphs after the list) until next list-item parent
+            let siblingAfter = parent.nextElementSibling;
+            while (siblingAfter && siblingAfter.tagName.toUpperCase() !== 'UL' && siblingAfter.tagName.toUpperCase() !== 'OL') {
+                pieces.push((siblingAfter.textContent || '').trim());
+                siblingAfter = siblingAfter.nextElementSibling;
+            }
+            return pieces.filter(Boolean).join('\n\n').trim();
+        }
+        // default: paragraph or other block-level element
+        return (start.textContent || '').trim();
+    }
+    candidates.forEach((el, idx) => {
+        if (seenElements.has(el))
             return;
-        if (p.querySelector(`.${BUTTON_CLASS}`))
+        if (el.querySelector(`.${BUTTON_CLASS}`))
             return;
-        seenElements.add(p);
-        // ensure paragraph is positioned so absolute button can align to its top-right
-        const prevPos = p.style.position;
+        seenElements.add(el);
+        const prevPos = el.style.position;
         if (!prevPos || prevPos === '')
-            p.style.position = 'relative';
-        const paragraphIndex = idx;
-        // capture paragraph text before injecting the button to avoid including the button label/icon
-        const paragraphText = (p.textContent || '').trim();
-        const btn = createFloatingButton();
+            el.style.position = 'relative';
+        const tag = el.tagName.toUpperCase();
+        const saveType = (/^H[1-6]$/.test(tag) ? 'heading' : (tag === 'LI' ? 'list' : 'paragraph'));
+        // generate a fragment-specific source id so different fragments of the same message
+        // don't overwrite each other. Prefer crypto.randomUUID when available.
+        const fragSuffix = (crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+        const fragmentSourceId = `${sourceId}::${saveType}::${fragSuffix}`;
+        const btn = createFloatingButton(saveType);
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
-            sendSaveMessage({ type: 'SAVE_CHAT_DATA', payload: { sourceId, messageText: paragraphText, pageUrl: window.location.href, paragraphIndex } }, btn);
+            try {
+                const fragment = collectFragmentText(el);
+                if (!fragment || fragment.length < 8) {
+                    // fallback to message-level if fragment too small
+                    const messageText = (messageEl.textContent || '').trim();
+                    sendSaveMessage({ type: 'SAVE_CHAT_DATA', payload: { sourceId: fragmentSourceId, messageText, pageUrl: window.location.href } }, btn);
+                    return;
+                }
+                sendSaveMessage({ type: 'SAVE_CHAT_DATA', payload: { sourceId: fragmentSourceId, messageText: fragment, pageUrl: window.location.href } }, btn);
+            }
+            catch (err) {
+                console.error('Failed to collect fragment', err);
+                const messageText = (messageEl.textContent || '').trim();
+                sendSaveMessage({ type: 'SAVE_CHAT_DATA', payload: { sourceId: fragmentSourceId, messageText, pageUrl: window.location.href } }, btn);
+            }
         });
-        p.appendChild(btn);
+        el.appendChild(btn);
     });
 }
-function createFloatingButton() {
+function createFloatingButton(saveType) {
     const button = document.createElement('button');
     button.className = BUTTON_CLASS;
     button.textContent = '💾'; // small icon-like label
     button.title = BUTTON_LABEL;
     button.type = 'button';
+    // color mapping by save type
+    const colorMap = {
+        message: { bg: '#2b6cb0', title: 'Guardar toda la respuesta' },
+        heading: { bg: '#805ad5', title: 'Guardar sección (titular + contenido)' },
+        list: { bg: '#38a169', title: 'Guardar punto clave' },
+        paragraph: { bg: '#d69e2e', title: 'Guardar párrafo' }
+    };
+    const cfg = saveType ? colorMap[saveType] : null;
+    if (cfg) {
+        button.style.background = cfg.bg;
+        button.style.color = '#fff';
+        button.title = cfg.title;
+    }
+    else {
+        button.style.background = 'rgba(0,0,0,0.06)';
+        button.style.color = '#000';
+        button.title = BUTTON_LABEL;
+    }
     Object.assign(button.style, {
         position: 'absolute',
         right: '0px',
@@ -241,13 +350,12 @@ function createFloatingButton() {
         fontSize: '12px',
         borderRadius: '6px',
         border: 'none',
-        background: 'rgba(0,0,0,0.06)',
         cursor: 'pointer',
-        opacity: '0.4',
+        opacity: '0.9',
         transition: 'opacity 120ms ease'
     });
     button.addEventListener('mouseover', () => { button.style.opacity = '1'; });
-    button.addEventListener('mouseout', () => { button.style.opacity = '0.4'; });
+    button.addEventListener('mouseout', () => { button.style.opacity = '0.9'; });
     // click handler is attached by caller so we don't close over UI state here
     return button;
 }
@@ -339,6 +447,7 @@ let storageListenerAttached = false;
 let mindMapResizeObserver = null;
 let currentMindMapData = null;
 let currentMindMapUpdatedAt = null;
+let currentMindMapPageUrl = null;
 const storageChangeListener = (changes, area) => {
     if (area !== 'local')
         return;
@@ -831,9 +940,11 @@ function loadMindMapIntoPanel() {
             setMindMapStatus('Pulsa “Actualizar con Gemini” para generar un nuevo mapa.', 'info');
             currentMindMapData = null;
             currentMindMapUpdatedAt = null;
+            currentMindMapPageUrl = null;
             return;
         }
         currentMindMapUpdatedAt = entry.updated_at || null;
+        currentMindMapPageUrl = entry.pageUrl || null;
         renderMindMapGraph(entry.data, entry.updated_at || undefined);
     });
 }
@@ -919,7 +1030,7 @@ function renderMindMapGraph(data, updatedAt) {
         const angle = (index / Math.max(nodes.length, 1)) * Math.PI * 2 - Math.PI / 2;
         const x = centerX + radius * Math.cos(angle);
         const y = centerY + radius * Math.sin(angle);
-        const ln = { id: node.id || `n_${index}`, titulo: node.titulo || `Nodo ${index + 1}`, descripcion: node.descripcion || '', x, y };
+        const ln = { id: node.id || `n_${index}`, titulo: node.titulo || `Nodo ${index + 1}`, descripcion: node.descripcion || '', x, y, source_ids: Array.isArray(node.source_ids) ? node.source_ids.slice() : [] };
         layoutNodes.push(ln);
         positionMap.set(ln.id, ln);
     });
@@ -1011,12 +1122,86 @@ function renderMindMapGraph(data, updatedAt) {
             descEl.textContent = description || 'Sin descripción disponible.';
             info.appendChild(titleEl);
             info.appendChild(descEl);
+            // Show source links if the node has source_ids attached (stored in the rendered node dataset)
+            try {
+                const curEl = canvas.querySelector(`[data-node-id="${id}"]`);
+                const raw = curEl?.dataset?.sourceIds;
+                const srcIds = raw ? JSON.parse(raw) : [];
+                if (Array.isArray(srcIds) && srcIds.length) {
+                    const listWrap = document.createElement('div');
+                    listWrap.style.marginTop = '8px';
+                    const label = document.createElement('div');
+                    label.textContent = 'Fragmentos relacionados:';
+                    label.style.fontSize = '12px';
+                    label.style.marginBottom = '6px';
+                    listWrap.appendChild(label);
+                    const ul = document.createElement('ul');
+                    ul.style.listStyle = 'none';
+                    ul.style.padding = '0';
+                    ul.style.margin = '0';
+                    for (const sid of srcIds) {
+                        const li = document.createElement('li');
+                        li.style.marginBottom = '6px';
+                        const btn = document.createElement('button');
+                        btn.textContent = `Ir al fragmento ${sid.slice(0, 8)}`;
+                        btn.style.padding = '6px 8px';
+                        btn.style.borderRadius = '6px';
+                        btn.style.border = '1px solid #ddd';
+                        btn.style.background = '#fff';
+                        btn.style.cursor = 'pointer';
+                        btn.addEventListener('click', () => {
+                            try {
+                                const targetPage = currentMindMapPageUrl || window.location.href;
+                                chrome.runtime.sendMessage({ type: 'NAVIGATE_TO_SOURCE', payload: { pageUrl: targetPage, sourceId: sid } }, (_resp) => { });
+                            }
+                            catch (e) {
+                                console.error('Failed to request navigate', e);
+                            }
+                        });
+                        const preview = document.createElement('div');
+                        preview.style.fontSize = '12px';
+                        preview.style.color = '#444';
+                        preview.style.marginTop = '6px';
+                        preview.textContent = 'Cargando vista previa...';
+                        // try to load a preview of the saved fragment from storage
+                        try {
+                            chrome.storage.local.get([sid], (res) => {
+                                const item = res?.[sid];
+                                if (item) {
+                                    const txt = (item.original_text || item.summary || item.title || '').replace(/\s+/g, ' ').trim();
+                                    preview.textContent = txt ? txt.slice(0, 220) + (txt.length > 220 ? '…' : '') : 'Sin texto disponible.';
+                                }
+                                else {
+                                    preview.textContent = 'Fragmento no encontrado en el almacenamiento.';
+                                }
+                            });
+                        }
+                        catch (_) {
+                            preview.textContent = 'No se pudo cargar la vista previa.';
+                        }
+                        li.appendChild(btn);
+                        li.appendChild(preview);
+                        ul.appendChild(li);
+                    }
+                    listWrap.appendChild(ul);
+                    info.appendChild(listWrap);
+                }
+            }
+            catch (e) {
+                console.debug('Failed to render source links', e);
+            }
         }
     };
     layoutNodes.forEach((ln) => {
         const group = document.createElementNS(svgNS, 'g');
         group.setAttribute('class', 'mindmap-node');
         group.dataset.nodeId = ln.id;
+        try {
+            group.dataset.sourceIds = JSON.stringify(ln.source_ids || []);
+        }
+        catch (_) {
+            group.dataset.sourceIds = '[]';
+        }
         if (ln.central)
             group.dataset.central = 'true';
         group.setAttribute('tabindex', '0');
