@@ -2,7 +2,7 @@ const chromeApi = globalThis.chrome;
 // The model name can vary by API availability. Use a sensible default but allow
 // overriding via `chrome.storage.local` key `geminiModel` if needed.
 // Use Gemini 2.5 flash model by default as requested.
-const DEFAULT_GEMINI_MODEL = 'models/gemini-2.5-flash';
+const DEFAULT_GEMINI_MODEL = 'models/gemini-1.5-flash';
 const GL_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 async function getModelName() {
     try {
@@ -19,6 +19,29 @@ async function getModelName() {
 function buildEndpointForModel(modelName, apiKey) {
     // modelName is expected like 'models/xyz'. Build the generateContent endpoint.
     return `${GL_API_BASE}/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
+}
+// List available models from the Generative Language API. Returns an array of model names.
+async function listModels(apiKey) {
+    try {
+        const url = `${GL_API_BASE}/models?key=${encodeURIComponent(apiKey)}`;
+        const resp = await fetch(url, { method: 'GET' });
+        if (!resp.ok) {
+            try {
+                const txt = await resp.text();
+                console.debug('ListModels failed', resp.status, txt);
+            }
+            catch (_) { }
+            return [];
+        }
+        const js = await resp.json();
+        // response may be { models: [{ name: 'models/xyz', ... }, ...] }
+        const models = Array.isArray(js?.models) ? js.models.map((m) => m?.name).filter(Boolean) : [];
+        return models;
+    }
+    catch (e) {
+        console.debug('listModels error', e);
+        return [];
+    }
 }
 if (!chromeApi?.runtime?.onMessage) {
     console.warn('Chrome runtime API is not available in this context.');
@@ -329,16 +352,21 @@ async function getApiKey() {
 }
 async function callGeminiMindMap(apiKey, conversationText) {
     const schemaDescription = `{
-  "titulo_central": "string",
-  "nodos": [
-    { "id": "string", "titulo": "string", "descripcion": "string", "source_ids": ["string"] }
-  ],
-  "relaciones": [
-    { "desde": "string", "hacia": "string", "tipo": "string" }
-  ]
+  "type": "object",
+  "properties": {
+    "concepto_principal": { "type": "string" },
+    "conceptos_secundarios": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["concepto_principal", "conceptos_secundarios"]
 }`;
+    const MODEL_FALLBACK_PREFERENCE = [
+        'models/gemini-1.5-flash',
+        'models/gemini-2.5-flash',
+        'models/text-bison-001',
+        'models/text-bison-002'
+    ];
     // Build a prompt that asks clearly for JSON output. Keep it reasonably short.
-    let basePrompt = `Analiza la siguiente conversación de chat sobre un proyecto. Genera un único objeto JSON que cumpla con este esquema: ${schemaDescription}. El campo \"titulo_central\" debe resumir el tema principal. Incluye referencias a los fragmentos usando sus IDs cuando proceda. Texto de la conversación:\n${conversationText}`;
+    let basePrompt = `**TAREA ESTRICTA:** Analiza el texto de la conversación y genera la estructura de un mapa conceptual estrictamente en formato JSON.\n**REGLAS:**\n1. NO DEBES incluir ninguna palabra, explicación, introducción, comentario o cualquier otro carácter ANTES O DESPUÉS del objeto JSON.\n2. La respuesta DEBE ser el JSON puro y nada más.\n3. Asegúrate de que el JSON comienza con '{' y termina con '}'.\n\nGenera un único objeto JSON que siga estrictamente este esquema: ${schemaDescription}.\n\nTexto de la conversación: \n"""\n${conversationText}\n"""`;
     // Helper: recursively collect string values from the API response to find text candidates
     function collectStringValues(obj, acc) {
         if (obj == null)
@@ -379,6 +407,197 @@ async function callGeminiMindMap(apiKey, conversationText) {
         acc.sort((a, b) => b.length - a.length);
         return acc[0] || null;
     }
+    function safeParseJsonString(str) {
+        try {
+            return parseJsonStrict(str);
+        }
+        catch (_) {
+            return null;
+        }
+    }
+    function extractStructuredJson(respObj) {
+        try {
+            if (!respObj || typeof respObj !== 'object')
+                return null;
+            if (typeof respObj.text === 'string') {
+                const parsed = safeParseJsonString(respObj.text);
+                if (parsed)
+                    return parsed;
+            }
+            const candidates = Array.isArray(respObj?.candidates) ? respObj.candidates : [];
+            for (const cand of candidates) {
+                const parts = Array.isArray(cand?.content?.parts) ? cand.content.parts : [];
+                for (const part of parts) {
+                    if (typeof part?.text === 'string') {
+                        const parsedText = safeParseJsonString(part.text);
+                        if (parsedText)
+                            return parsedText;
+                    }
+                    const inlineData = part?.inlineData;
+                    if (inlineData && typeof inlineData === 'object' && typeof inlineData.data === 'string') {
+                        const mime = inlineData.mimeType || inlineData.mime_type || '';
+                        if (typeof mime === 'string' && mime.toLowerCase().includes('json')) {
+                            try {
+                                if (typeof atob === 'function') {
+                                    const decoded = atob(inlineData.data);
+                                    const parsedInline = safeParseJsonString(decoded);
+                                    if (parsedInline)
+                                        return parsedInline;
+                                }
+                                else {
+                                    console.debug('atob no está disponible para decodificar inlineData JSON');
+                                }
+                            }
+                            catch (decodeErr) {
+                                console.debug('No se pudo decodificar inlineData JSON', decodeErr);
+                            }
+                        }
+                    }
+                    if (part?.functionCall?.args && typeof part.functionCall.args === 'object') {
+                        const args = part.functionCall.args;
+                        if (isValidMindMap(args))
+                            return args;
+                    }
+                }
+            }
+        }
+        catch (err) {
+            console.debug('extractStructuredJson falló', err);
+        }
+        return null;
+    }
+    function isSimpleMindMapShape(value) {
+        return (value &&
+            typeof value === 'object' &&
+            typeof value.concepto_principal === 'string' &&
+            Array.isArray(value.conceptos_secundarios) &&
+            value.conceptos_secundarios.every((item) => typeof item === 'string'));
+    }
+    function convertSimpleMindMap(simple) {
+        const centralId = '__central__';
+        const nodes = [
+            {
+                id: centralId,
+                titulo: simple.concepto_principal,
+                descripcion: simple.concepto_principal,
+                source_ids: []
+            },
+            ...simple.conceptos_secundarios.map((concepto, idx) => ({
+                id: `simple_${idx + 1}`,
+                titulo: concepto,
+                descripcion: concepto,
+                source_ids: []
+            }))
+        ];
+        const relaciones = nodes
+            .filter((n) => n.id !== centralId)
+            .map((n) => ({ desde: centralId, hacia: n.id, tipo: 'relacion' }));
+        return {
+            titulo_central: simple.concepto_principal,
+            nodos: nodes,
+            relaciones
+        };
+    }
+    const looksLikeId = (s) => {
+        if (!s)
+            return false;
+        const t = s.trim();
+        if (/^[A-Za-z0-9_\-]{10,}$/.test(t) && t.length < 120)
+            return true;
+        const parts = t.split(/\s+/);
+        if (parts.length > 0 && parts.every(p => /^[A-Za-z0-9_\-]{6,}$/.test(p)))
+            return true;
+        return false;
+    };
+    async function forcedExampleRetry(currentModel) {
+        try {
+            const example = {
+                concepto_principal: 'Tema de ejemplo',
+                conceptos_secundarios: ['Concepto 1', 'Concepto 2']
+            };
+            const exampleStr = JSON.stringify(example, null, 2);
+            const forcedPrompt = 'URGENTE: Devuelve SOLO el objeto JSON EXACTO que siga este ejemplo: ' + exampleStr + '\nAhora, usando la conversación anterior: ' + basePrompt;
+            const forcedBody = {
+                contents: [{ role: 'user', parts: [{ text: forcedPrompt }] }],
+                generationConfig: { temperature: 0.0, topP: 0.8, topK: 40, maxOutputTokens: 2048, responseMimeType: 'application/json' },
+                safetySettings: []
+            };
+            const preferredSequence = [
+                currentModel,
+                'models/gemini-1.5-pro',
+                ...MODEL_FALLBACK_PREFERENCE
+            ].filter(Boolean);
+            const tried = new Set();
+            let availableModels = null;
+            for (const candidate of preferredSequence) {
+                if (typeof candidate !== 'string' || !candidate.trim() || tried.has(candidate))
+                    continue;
+                tried.add(candidate);
+                let resp = null;
+                try {
+                    const endpoint = buildEndpointForModel(candidate, apiKey);
+                    resp = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(forcedBody) });
+                }
+                catch (reqErr) {
+                    console.error('Forced retry request error', candidate, reqErr);
+                    continue;
+                }
+                if (!resp)
+                    continue;
+                if (resp.status === 404) {
+                    // Only fetch available models once to avoid extra calls
+                    if (!availableModels) {
+                        try {
+                            availableModels = await listModels(apiKey);
+                            console.debug('Forced retry ListModels returned', availableModels);
+                        }
+                        catch (lmErr) {
+                            console.error('Forced retry listModels failed', lmErr);
+                        }
+                    }
+                    console.debug('Forced retry model not found', candidate);
+                    continue;
+                }
+                if (!resp.ok) {
+                    try {
+                        const errTxt = await resp.text();
+                        console.error('Gemini API error (forced retry)', candidate, resp.status, errTxt);
+                    }
+                    catch (_) {
+                        console.error('Gemini API error (forced retry)', candidate, resp.status);
+                    }
+                    continue;
+                }
+                try {
+                    const dataForced = await resp.json();
+                    const rawForced = await extractTextFromResponse(dataForced);
+                    if (!rawForced || typeof rawForced !== 'string') {
+                        console.debug('Forced retry returned empty text', candidate);
+                        continue;
+                    }
+                    if (looksLikeId(rawForced)) {
+                        console.debug('Forced retry still looks like an ID for model', candidate, rawForced.slice(0, 60));
+                        continue;
+                    }
+                    const parsedForced = parseJsonStrict(rawForced);
+                    if (isValidMindMap(parsedForced))
+                        return parsedForced;
+                    if (isSimpleMindMapShape(parsedForced))
+                        return convertSimpleMindMap(parsedForced);
+                    console.debug('Forced retry JSON did not validate', candidate, parsedForced);
+                }
+                catch (err) {
+                    console.error('Forced retry parse failed', err);
+                }
+            }
+            return null;
+        }
+        catch (err) {
+            console.error('Forced example retry request failed', err);
+            return null;
+        }
+    }
+    let forcedExampleAttempts = 0;
     // We'll attempt up to 2 tries: initial prompt and then a stricter prompt wrapped in triple backticks
     for (let attempt = 0; attempt < 2; attempt++) {
         const prompt = attempt === 0
@@ -390,7 +609,8 @@ async function callGeminiMindMap(apiKey, conversationText) {
                 temperature: 0.0,
                 topP: 0.8,
                 topK: 40,
-                maxOutputTokens: 2048
+                maxOutputTokens: 2048,
+                responseMimeType: 'application/json'
             },
             safetySettings: []
         };
@@ -399,18 +619,57 @@ async function callGeminiMindMap(apiKey, conversationText) {
             console.debug('Calling Gemini with conversationText:', conversationText.slice(0, 2000));
         }
         catch (_) { }
-        const modelName = await getModelName();
+        let modelName = await getModelName();
+        // If the configured/default model is a 'flash' variant and this is the second
+        // attempt (stricter prompt), try the 'pro' variant which may produce more
+        // structured outputs for complex schemas.
+        if (attempt === 1 && typeof modelName === 'string' && modelName.includes('flash')) {
+            console.debug('Fallback: switching model from', modelName, 'to models/gemini-1.5-pro for this attempt');
+            modelName = 'models/gemini-1.5-pro';
+        }
         const endpoint = buildEndpointForModel(modelName, apiKey);
-        const response = await fetch(endpoint, {
+        let response = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
+        // If the model is not found (404), call ListModels to suggest alternatives and
+        // attempt a fallback to a supported model from a preference list.
+        if (response.status === 404) {
+            try {
+                const available = await listModels(apiKey);
+                console.debug('ListModels returned', available);
+                // preference order for falling back
+                const pick = MODEL_FALLBACK_PREFERENCE.find(p => available.includes(p));
+                if (pick) {
+                    console.debug('Falling back to model', pick);
+                    modelName = pick;
+                    const fallbackEndpoint = buildEndpointForModel(modelName, apiKey);
+                    response = await fetch(fallbackEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                }
+                else {
+                    throw new Error('Modelo no disponible y no se encontró alternativa en la lista de modelos. Modelos disponibles: ' + available.join(', '));
+                }
+            }
+            catch (e) {
+                const errText = await response.text().catch(() => String(e));
+                throw new Error(`Gemini API error: ${response.status} ${errText}`);
+            }
+        }
         if (!response.ok) {
             const errorText = await response.text();
             throw new Error(`Gemini API error: ${response.status} ${errorText}`);
         }
         const data = await response.json();
+        const structuredDirect = extractStructuredJson(data);
+        if (structuredDirect) {
+            if (isValidMindMap(structuredDirect)) {
+                return structuredDirect;
+            }
+            if (isSimpleMindMapShape(structuredDirect)) {
+                return convertSimpleMindMap(structuredDirect);
+            }
+        }
         const rawText = await extractTextFromResponse(data);
         if (!rawText || typeof rawText !== 'string' || !rawText.trim()) {
             // if last attempt, throw an informative error with a bit of the response
@@ -422,10 +681,27 @@ async function callGeminiMindMap(apiKey, conversationText) {
             console.debug('No usable text found in Gemini response, retrying with stricter prompt...');
             continue;
         }
+        if (looksLikeId(rawText)) {
+            if (forcedExampleAttempts < 2) {
+                forcedExampleAttempts++;
+                console.debug('Raw response looks like an opaque ID; triggering forced example retry', forcedExampleAttempts);
+                const forcedResult = await forcedExampleRetry(modelName);
+                if (forcedResult)
+                    return forcedResult;
+                console.debug('Forced example retry did not yield valid JSON, continuing with next attempt');
+                continue;
+            }
+            if (attempt === 1) {
+                throw new Error('La respuesta de Gemini parece un identificador opaco en vez de JSON.');
+            }
+            continue;
+        }
         try {
             const json = parseJsonStrict(rawText);
             if (isValidMindMap(json))
                 return json;
+            if (isSimpleMindMapShape(json))
+                return convertSimpleMindMap(json);
             // If invalid, log and try stricter prompt once
             console.debug('Parsed JSON did not validate against schema. Attempt:', attempt, 'parsed:', json);
             if (attempt === 1)
@@ -439,20 +715,45 @@ async function callGeminiMindMap(apiKey, conversationText) {
             // fallback: try again with stricter prompt
         }
     }
-    // unreachable normally
-    return null;
+    throw new Error('Fallo crítico: El modelo no generó JSON válido después de todos los intentos.');
 }
 function parseJsonStrict(raw) {
+    if (typeof raw !== 'string')
+        throw new Error('Respuesta no es una cadena de texto');
+    let cleaned = raw.trim();
+    const firstBracket = cleaned.indexOf('{');
+    const lastBracket = cleaned.lastIndexOf('}');
+    if (firstBracket === -1 || lastBracket === -1 || lastBracket <= firstBracket) {
+        console.error('Falló la limpieza de corchetes, contenido original:', cleaned.slice(0, 800));
+        throw new Error('Respuesta no tiene formato JSON aparente.');
+    }
+    cleaned = cleaned.substring(firstBracket, lastBracket + 1);
     try {
-        return JSON.parse(raw);
+        return JSON.parse(cleaned);
     }
-    catch (_) {
-        const match = raw.match(/```json\s*([\s\S]*?)```/i) || raw.match(/```\s*([\s\S]*?)```/i);
-        if (match && match[1]) {
-            return JSON.parse(match[1]);
+    catch (primaryErr) {
+        console.error('Falló el parseo JSON tras limpieza, intentando estrategias adicionales', primaryErr);
+    }
+    // Intentos adicionales reutilizando el contenido ya limpiado
+    const codeBlockMatch = cleaned.match(/```json\s*([\s\S]*?)```/i) || cleaned.match(/```\s*([\s\S]*?)```/i);
+    if (codeBlockMatch && codeBlockMatch[1]) {
+        try {
+            return JSON.parse(codeBlockMatch[1]);
         }
-        throw new Error('No se pudo analizar JSON en la respuesta.');
+        catch (_) { /* fall through */ }
     }
+    const objMatches = cleaned.match(/\{[\s\S]*\}/g);
+    if (objMatches && objMatches.length) {
+        objMatches.sort((a, b) => b.length - a.length);
+        for (const m of objMatches) {
+            try {
+                return JSON.parse(m);
+            }
+            catch (_) { /* continue */ }
+        }
+    }
+    const preview = cleaned.slice(0, 800).replace(/\s+/g, ' ');
+    throw new Error(`No se pudo analizar JSON en la respuesta. Preview: ${preview}`);
 }
 function isValidMindMap(value) {
     if (!value || typeof value !== 'object')
