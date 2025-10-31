@@ -29,6 +29,14 @@
       "run_at": "document_idle"
     }
   ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/vendor/d3.min.js"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "action": {
     "default_title": "AI Chat Knowledge Organizer",
     "default_popup": "src/popup.html"

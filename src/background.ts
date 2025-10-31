@@ -6,24 +6,12 @@ type SaveChatDataPayload = {
 };
 
 type MindMapNode = {
-  id: string;
-  titulo: string;
-  descripcion: string;
-  // optional references to saved fragments (source_id values)
-  source_ids?: string[];
+  nombre: string;
+  id_referencia?: string | null;
+  hijos?: MindMapNode[];
 };
 
-type MindMapRelation = {
-  desde: string;
-  hacia: string;
-  tipo: string;
-};
-
-type MindMapData = {
-  titulo_central: string;
-  nodos: MindMapNode[];
-  relaciones: MindMapRelation[];
-};
+type MindMapData = MindMapNode;
 
 const chromeApi = (globalThis as typeof globalThis & { chrome?: any }).chrome;
 
@@ -32,11 +20,6 @@ const chromeApi = (globalThis as typeof globalThis & { chrome?: any }).chrome;
 // Use Gemini 2.5 flash model by default as requested.
 const DEFAULT_GEMINI_MODEL = 'models/gemini-1.5-flash';
 const GL_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-
-type SimpleMindMap = {
-  concepto_principal: string;
-  conceptos_secundarios: string[];
-};
 
 async function getModelName(): Promise<string> {
   try {
@@ -390,10 +373,15 @@ async function callGeminiMindMap(apiKey: string, conversationText: string): Prom
   const schemaDescription = `{
   "type": "object",
   "properties": {
-    "concepto_principal": { "type": "string" },
-    "conceptos_secundarios": { "type": "array", "items": { "type": "string" } }
+    "nombre": { "type": "string", "description": "Tema o subtema" },
+    "id_referencia": { "type": "string", "description": "ID del fragmento original (por ejemplo, ID:abc123). Puede ser null si no aplica." },
+    "hijos": {
+      "type": "array",
+      "items": { "$ref": "#" },
+      "description": "Subtemas o conceptos anidados"
+    }
   },
-  "required": ["concepto_principal", "conceptos_secundarios"]
+  "required": ["nombre", "hijos"]
 }`;
 
   const MODEL_FALLBACK_PREFERENCE = [
@@ -403,8 +391,7 @@ async function callGeminiMindMap(apiKey: string, conversationText: string): Prom
     'models/text-bison-002'
   ];
 
-  // Build a prompt that asks clearly for JSON output. Keep it reasonably short.
-  let basePrompt = `**TAREA ESTRICTA:** Analiza el texto de la conversación y genera la estructura de un mapa conceptual estrictamente en formato JSON.\n**REGLAS:**\n1. NO DEBES incluir ninguna palabra, explicación, introducción, comentario o cualquier otro carácter ANTES O DESPUÉS del objeto JSON.\n2. La respuesta DEBE ser el JSON puro y nada más.\n3. Asegúrate de que el JSON comienza con '{' y termina con '}'.\n\nGenera un único objeto JSON que siga estrictamente este esquema: ${schemaDescription}.\n\nTexto de la conversación: \n"""\n${conversationText}\n"""`;
+  let basePrompt = `**TAREA ESTRICTA:** Analiza el texto de la conversación y genera un árbol jerárquico en formato JSON estricto.\n**REGLAS:**\n1. NO DEBES incluir ninguna palabra, explicación, comentario o carácter ANTES O DESPUÉS del objeto JSON.\n2. La respuesta DEBE ser el JSON puro y nada más.\n3. El JSON debe comenzar con '{' y terminar con '}'.\n4. Sigue el esquema proporcionado exactamente. Cada nodo debe tener la propiedad "nombre" y el contenedor "hijos" (usa un arreglo vacío si no hay subtemas).\n5. Usa el campo "id_referencia" para vincular cada nodo con el identificador del fragmento original indicado entre corchetes (por ejemplo, [ID:abc123]). Si no encuentras un ID claro, usa null.\n\n**ESQUEMA A RESPETAR:** ${schemaDescription}\n\n**CONVERSACIÓN:**\n"""\n${conversationText}\n"""`;
 
   // Helper: recursively collect string values from the API response to find text candidates
   function collectStringValues(obj: any, acc: string[]) {
@@ -456,7 +443,7 @@ async function callGeminiMindMap(apiKey: string, conversationText: string): Prom
 
       if (typeof respObj.text === 'string') {
         const parsed = safeParseJsonString(respObj.text);
-        if (parsed) return parsed;
+        if (parsed && isValidMindMap(parsed)) return parsed;
       }
 
       const candidates: any[] = Array.isArray(respObj?.candidates) ? respObj.candidates : [];
@@ -465,7 +452,7 @@ async function callGeminiMindMap(apiKey: string, conversationText: string): Prom
         for (const part of parts) {
           if (typeof part?.text === 'string') {
             const parsedText = safeParseJsonString(part.text);
-            if (parsedText) return parsedText;
+            if (parsedText && isValidMindMap(parsedText)) return parsedText;
           }
           const inlineData = part?.inlineData;
           if (inlineData && typeof inlineData === 'object' && typeof inlineData.data === 'string') {
@@ -475,7 +462,7 @@ async function callGeminiMindMap(apiKey: string, conversationText: string): Prom
                 if (typeof atob === 'function') {
                   const decoded = atob(inlineData.data);
                   const parsedInline = safeParseJsonString(decoded);
-                  if (parsedInline) return parsedInline;
+                  if (parsedInline && isValidMindMap(parsedInline)) return parsedInline;
                 } else {
                   console.debug('atob no está disponible para decodificar inlineData JSON');
                 }
@@ -496,44 +483,6 @@ async function callGeminiMindMap(apiKey: string, conversationText: string): Prom
     return null;
   }
 
-  function isSimpleMindMapShape(value: any): value is SimpleMindMap {
-    return (
-      value &&
-      typeof value === 'object' &&
-      typeof value.concepto_principal === 'string' &&
-      Array.isArray(value.conceptos_secundarios) &&
-      value.conceptos_secundarios.every((item: any) => typeof item === 'string')
-    );
-  }
-
-  function convertSimpleMindMap(simple: SimpleMindMap): MindMapData {
-    const centralId = '__central__';
-    const nodes: MindMapNode[] = [
-      {
-        id: centralId,
-        titulo: simple.concepto_principal,
-        descripcion: simple.concepto_principal,
-        source_ids: []
-      },
-      ...simple.conceptos_secundarios.map((concepto, idx) => ({
-        id: `simple_${idx + 1}`,
-        titulo: concepto,
-        descripcion: concepto,
-        source_ids: []
-      }))
-    ];
-
-    const relaciones: MindMapRelation[] = nodes
-      .filter((n) => n.id !== centralId)
-      .map((n) => ({ desde: centralId, hacia: n.id, tipo: 'relacion' }));
-
-    return {
-      titulo_central: simple.concepto_principal,
-      nodos: nodes,
-      relaciones
-    };
-  }
-
   const looksLikeId = (s?: string | null) => {
     if (!s) return false;
     const t = s.trim();
@@ -545,9 +494,27 @@ async function callGeminiMindMap(apiKey: string, conversationText: string): Prom
 
   async function forcedExampleRetry(currentModel: string): Promise<MindMapData | null> {
     try {
-      const example: SimpleMindMap = {
-        concepto_principal: 'Tema de ejemplo',
-        conceptos_secundarios: ['Concepto 1', 'Concepto 2']
+      const example: MindMapData = {
+        nombre: 'Tema de ejemplo',
+        id_referencia: 'ID:ejemplo-root',
+        hijos: [
+          {
+            nombre: 'Subtema 1',
+            id_referencia: 'ID:subtema-1',
+            hijos: []
+          },
+          {
+            nombre: 'Subtema 2',
+            id_referencia: null,
+            hijos: [
+              {
+                nombre: 'Detalle 2.1',
+                id_referencia: 'ID:detalle-21',
+                hijos: []
+              }
+            ]
+          }
+        ]
       };
       const exampleStr = JSON.stringify(example, null, 2);
       const forcedPrompt = 'URGENTE: Devuelve SOLO el objeto JSON EXACTO que siga este ejemplo: ' + exampleStr + '\nAhora, usando la conversación anterior: ' + basePrompt;
@@ -617,7 +584,6 @@ async function callGeminiMindMap(apiKey: string, conversationText: string): Prom
           }
           const parsedForced = parseJsonStrict(rawForced);
           if (isValidMindMap(parsedForced)) return parsedForced as MindMapData;
-          if (isSimpleMindMapShape(parsedForced)) return convertSimpleMindMap(parsedForced);
           console.debug('Forced retry JSON did not validate', candidate, parsedForced);
         } catch (err) {
           console.error('Forced retry parse failed', err);
@@ -700,13 +666,8 @@ async function callGeminiMindMap(apiKey: string, conversationText: string): Prom
     const data = await response.json();
 
     const structuredDirect = extractStructuredJson(data);
-    if (structuredDirect) {
-      if (isValidMindMap(structuredDirect)) {
-        return structuredDirect as MindMapData;
-      }
-      if (isSimpleMindMapShape(structuredDirect)) {
-        return convertSimpleMindMap(structuredDirect);
-      }
+    if (structuredDirect && isValidMindMap(structuredDirect)) {
+      return structuredDirect as MindMapData;
     }
 
     const rawText = await extractTextFromResponse(data);
@@ -738,9 +699,8 @@ async function callGeminiMindMap(apiKey: string, conversationText: string): Prom
     }
 
     try {
-      const json = parseJsonStrict(rawText);
+  const json = parseJsonStrict(rawText);
   if (isValidMindMap(json)) return json as MindMapData;
-  if (isSimpleMindMapShape(json)) return convertSimpleMindMap(json);
       // If invalid, log and try stricter prompt once
       console.debug('Parsed JSON did not validate against schema. Attempt:', attempt, 'parsed:', json);
 
@@ -794,25 +754,17 @@ function parseJsonStrict(raw: string): any {
 }
 
 function isValidMindMap(value: any): value is MindMapData {
-  if (!value || typeof value !== 'object') return false;
-  if (typeof value.titulo_central !== 'string') return false;
-  if (!Array.isArray(value.nodos) || !Array.isArray(value.relaciones)) return false;
-  // validate node shape
-  for (const n of value.nodos) {
-    if (!n || typeof n !== 'object') return false;
-    if (typeof n.id !== 'string') return false;
-    if (typeof n.titulo !== 'string') return false;
-    if (typeof n.descripcion !== 'string') return false;
-    if (n.source_ids && !Array.isArray(n.source_ids)) return false;
+  function validateNode(node: any, depth: number): boolean {
+    if (!node || typeof node !== 'object') return false;
+    if (typeof node.nombre !== 'string' || !node.nombre.trim()) return false;
+    if (node.id_referencia != null && typeof node.id_referencia !== 'string') return false;
+    if (node.hijos == null) return true;
+    if (!Array.isArray(node.hijos)) return false;
+    if (node.hijos.length === 0 && depth === 0) return true;
+    return node.hijos.every((child) => validateNode(child, depth + 1));
   }
-  // validate relations shape
-  for (const r of value.relaciones) {
-    if (!r || typeof r !== 'object') return false;
-    if (typeof r.desde !== 'string') return false;
-    if (typeof r.hacia !== 'string') return false;
-    if (typeof r.tipo !== 'string') return false;
-  }
-  return true;
+
+  return validateNode(value, 0);
 }
 
 function notifyMindMapUpdated(normalized: string, map: MindMapData) {

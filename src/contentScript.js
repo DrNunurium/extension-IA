@@ -7,6 +7,32 @@ const BUTTON_CLASS = 'ai-chat-knowledge-organizer-save';
 const BUTTON_LABEL = 'Guardar Datos';
 const MIN_TEXT_LENGTH = 60; // mínimo número de caracteres para considerar un node como mensaje (reducción de falsos positivos)
 const MIN_PARAGRAPH_LENGTH = 30; // mínimo para considerar un párrafo como candidato a botón
+let d3ModulePromise = null;
+function ensureD3() {
+    const existing = window.d3;
+    if (existing)
+        return Promise.resolve(existing);
+    if (!d3ModulePromise) {
+        const moduleUrl = chrome?.runtime?.getURL ? chrome.runtime.getURL('src/vendor/d3.min.js') : null;
+        d3ModulePromise = (moduleUrl ? fetch(moduleUrl).then((res) => {
+            if (!res.ok)
+                throw new Error(`No se pudo obtener d3.min.js (${res.status})`);
+            return res.text();
+        }) : Promise.reject(new Error('No se pudo resolver la URL de D3')))
+            .then((source) => {
+            const evaluate = new Function(`${source}; return window.d3;`);
+            const result = evaluate.call(window);
+            if (!result)
+                throw new Error('D3 no quedó disponible tras la carga.');
+            return result;
+        })
+            .catch((err) => {
+            d3ModulePromise = null;
+            throw err;
+        });
+    }
+    return d3ModulePromise;
+}
 const seenElements = new WeakSet();
 // Platform-specific selector sets (prioritized). These are best-effort and may need
 // refinement for the exact DOM of each UI. We try them first for accuracy.
@@ -477,7 +503,7 @@ function createSidePanel() {
     const style = document.createElement('style');
     style.textContent = `
     :host { font-family: system-ui, Arial, sans-serif; }
-    .panel { box-sizing: border-box; height: 100vh; width: 100%; background: #fff; border-left: 1px solid #e6e6e6; display:flex; flex-direction:column; }
+  .panel { box-sizing: border-box; height: 100vh; width: 100%; background: #fff; border-left: 1px solid #e6e6e6; display:flex; flex-direction:column; }
     header { padding:12px; border-bottom:1px solid #eee }
     header h1 { margin:0; font-size:16px }
     #context-tree-list { padding:12px; overflow:auto; flex:1 }
@@ -485,7 +511,7 @@ function createSidePanel() {
     .group-header { width:100%; text-align:left; padding:8px; background:#f7f7f7; border:none; cursor:pointer }
     ul { list-style:none; padding-left:8px }
     li { padding:6px 0; display:flex; align-items:center; justify-content:space-between }
-    .close-btn { position: absolute; left: -42px; top: 8px; padding:6px 8px; border-radius:6px; border:none; background:rgba(0,0,0,0.6); color:#fff; cursor:pointer }
+  .close-btn { position: absolute; left: -42px; top: 8px; padding:6px 8px; border-radius:6px; border:none; background:rgba(0,0,0,0.6); color:#fff; cursor:pointer }
     #mind-map-section { border-top:1px solid #eee; padding:12px; }
     .mindmap-header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
     .mindmap-header h2 { font-size:15px; margin:0; }
@@ -500,17 +526,19 @@ function createSidePanel() {
     #mind-map-canvas svg { width:100%; height:100%; }
     .mindmap-info { margin-top:10px; font-size:12px; color:#333; min-height:48px; background:#f9f9ff; border:1px solid #ececff; border-radius:6px; padding:8px; }
     .mindmap-placeholder { display:flex; align-items:center; justify-content:center; height:100%; font-size:14px; color:#888; text-align:center; padding:12px; }
-    .mindmap-node { transition:transform 120ms ease, fill 120ms ease; cursor:pointer; }
-    .mindmap-node text { font-size:11px; pointer-events:none; fill:#222; }
-    .mindmap-node circle { fill:#ffffff; stroke:#5a67d8; stroke-width:2; }
-    .mindmap-node[data-central="true"] circle { fill:#5a67d8; stroke:#434190; stroke-width:2; }
-    .mindmap-node[data-central="true"] text { fill:#fff; font-weight:600; }
-    .mindmap-node:hover circle { fill:#ebf4ff; }
-    .mindmap-link { stroke:#d0d5ff; stroke-width:1.6; marker-end:url(#arrowhead); opacity:0.85; transition:opacity 120ms ease; }
-    .mindmap-link[data-highlight="true"] { stroke:#4250d6; opacity:1; }
-    .mindmap-node[data-highlight="true"] circle { fill:#eef2ff; }
+    .mindmap-node { cursor:pointer; transition:transform 120ms ease; }
+    .mindmap-node text { font-size:11px; pointer-events:none; fill:#1a1a1a; }
+    .mindmap-node circle { fill:#ffffff; stroke:#5a67d8; stroke-width:2; transition:fill 120ms ease, stroke 120ms ease; }
+    .mindmap-node circle[data-collapsed="true"] { stroke-dasharray:2 2; }
+    .mindmap-node:hover circle { fill:#f0f4ff; }
+    .mindmap-node[data-highlight="true"] circle { fill:#eef2ff; stroke:#4338ca; }
     .mindmap-node[data-highlight="true"] text { font-weight:600; }
-    .mindmap-legend { font-size:11px; color:#777; margin-top:6px; }
+    .mindmap-link { fill:none; stroke:#d0d5ff; stroke-width:1.4; opacity:0.9; transition:stroke 120ms ease, opacity 120ms ease; }
+    .mindmap-node-children-count { margin-top:6px; font-size:12px; color:#4a5568; }
+    .mindmap-node-reference { margin-top:10px; padding:8px; border-radius:6px; background:#f4f6ff; border:1px solid #e1e4ff; font-size:12px; color:#333; }
+    .mindmap-reference-button { font-size:11px; }
+    .mindmap-reference-preview { margin-top:6px; font-size:12px; color:#4a4a4a; }
+    .mindmap-legend { font-size:11px; color:#777; margin-top:10px; }
   `;
     const panel = document.createElement('div');
     panel.className = 'panel';
@@ -584,6 +612,11 @@ function createSidePanel() {
         if (!dragging)
             return;
         dragging = false;
+        try {
+            if (handle.hasPointerCapture(ev.pointerId))
+                handle.releasePointerCapture(ev.pointerId);
+        }
+        catch (_) { /* ignore */ }
         try {
             document.body.style.userSelect = '';
         }
@@ -984,257 +1017,234 @@ function renderMindMapGraph(data, updatedAt) {
     currentMindMapData = data;
     currentMindMapUpdatedAt = updatedAt || null;
     canvas.innerHTML = '';
-    const rect = canvas.getBoundingClientRect();
-    const width = rect.width || 520;
-    const height = rect.height || 320;
-    const svgNS = 'http://www.w3.org/2000/svg';
-    const svg = document.createElementNS(svgNS, 'svg');
-    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-    svg.setAttribute('width', '100%');
-    svg.setAttribute('height', '100%');
-    const defs = document.createElementNS(svgNS, 'defs');
-    const marker = document.createElementNS(svgNS, 'marker');
-    marker.setAttribute('id', 'arrowhead');
-    marker.setAttribute('markerWidth', '6');
-    marker.setAttribute('markerHeight', '6');
-    marker.setAttribute('refX', '6');
-    marker.setAttribute('refY', '3');
-    marker.setAttribute('orient', 'auto');
-    const markerPath = document.createElementNS(svgNS, 'path');
-    markerPath.setAttribute('d', 'M0,0 L6,3 L0,6 Z');
-    markerPath.setAttribute('fill', '#5a67d8');
-    marker.appendChild(markerPath);
-    defs.appendChild(marker);
-    svg.appendChild(defs);
-    const linksGroup = document.createElementNS(svgNS, 'g');
-    linksGroup.setAttribute('class', 'mindmap-links');
-    const nodesGroup = document.createElementNS(svgNS, 'g');
-    nodesGroup.setAttribute('class', 'mindmap-nodes');
-    const radius = Math.min(width, height) / 2 - 70;
-    const centerX = width / 2;
-    const centerY = height / 2;
-    const layoutNodes = [];
-    const positionMap = new Map();
-    const centerNode = {
-        id: '__central__',
-        titulo: data.titulo_central || 'Tema principal',
-        descripcion: data.titulo_central || '',
-        x: centerX,
-        y: centerY,
-        central: true
-    };
-    layoutNodes.push(centerNode);
-    positionMap.set(centerNode.id, centerNode);
-    const nodes = Array.isArray(data.nodos) ? data.nodos : [];
-    nodes.forEach((node, index) => {
-        const angle = (index / Math.max(nodes.length, 1)) * Math.PI * 2 - Math.PI / 2;
-        const x = centerX + radius * Math.cos(angle);
-        const y = centerY + radius * Math.sin(angle);
-        const ln = { id: node.id || `n_${index}`, titulo: node.titulo || `Nodo ${index + 1}`, descripcion: node.descripcion || '', x, y, source_ids: Array.isArray(node.source_ids) ? node.source_ids.slice() : [] };
-        layoutNodes.push(ln);
-        positionMap.set(ln.id, ln);
-    });
-    const adjacency = new Map();
-    const ensureKnownId = (rawId) => {
-        if (!rawId)
-            return '__central__';
-        if (positionMap.has(rawId))
-            return rawId;
-        return '__central__';
-    };
-    const relations = Array.isArray(data.relaciones) ? data.relaciones : [];
-    const connected = new Set();
-    relations.forEach((rel) => {
-        const fromId = ensureKnownId(rel.desde);
-        const toId = ensureKnownId(rel.hacia);
-        const fromNode = positionMap.get(fromId);
-        const toNode = positionMap.get(toId);
-        if (!fromNode || !toNode)
-            return;
-        const line = document.createElementNS(svgNS, 'line');
-        line.setAttribute('x1', String(fromNode.x));
-        line.setAttribute('y1', String(fromNode.y));
-        line.setAttribute('x2', String(toNode.x));
-        line.setAttribute('y2', String(toNode.y));
-        line.setAttribute('class', 'mindmap-link');
-        line.setAttribute('marker-end', 'url(#arrowhead)');
-        line.dataset.source = fromId;
-        line.dataset.target = toId;
-        linksGroup.appendChild(line);
-        connected.add(fromId);
-        connected.add(toId);
-        const listFrom = adjacency.get(fromId) || [];
-        listFrom.push(line);
-        adjacency.set(fromId, listFrom);
-        const listTo = adjacency.get(toId) || [];
-        listTo.push(line);
-        adjacency.set(toId, listTo);
-    });
-    layoutNodes.forEach((ln) => {
-        if (ln.id === '__central__')
-            return;
-        if (!connected.has(ln.id)) {
-            const line = document.createElementNS(svgNS, 'line');
-            line.setAttribute('x1', String(centerNode.x));
-            line.setAttribute('y1', String(centerNode.y));
-            line.setAttribute('x2', String(ln.x));
-            line.setAttribute('y2', String(ln.y));
-            line.setAttribute('class', 'mindmap-link');
-            line.setAttribute('marker-end', 'url(#arrowhead)');
-            line.dataset.source = centerNode.id;
-            line.dataset.target = ln.id;
-            linksGroup.appendChild(line);
-            const listFrom = adjacency.get(centerNode.id) || [];
-            listFrom.push(line);
-            adjacency.set(centerNode.id, listFrom);
-            const listTo = adjacency.get(ln.id) || [];
-            listTo.push(line);
-            adjacency.set(ln.id, listTo);
-        }
-    });
-    svg.appendChild(linksGroup);
-    const highlightNode = (id, description, title) => {
-        if (!panelRoot)
-            return;
-        const nodeElements = canvas.querySelectorAll('.mindmap-node');
-        nodeElements.forEach((el) => el.removeAttribute('data-highlight'));
-        const edgeElements = canvas.querySelectorAll('.mindmap-link');
-        edgeElements.forEach((el) => el.removeAttribute('data-highlight'));
-        const current = canvas.querySelector(`[data-node-id="${id}"]`);
-        if (current)
-            current.setAttribute('data-highlight', 'true');
-        const edges = adjacency.get(id) || [];
-        edges.forEach((edge) => edge.setAttribute('data-highlight', 'true'));
-        if (id !== centerNode.id) {
-            const centerEdges = adjacency.get(centerNode.id) || [];
-            centerEdges.forEach((edge) => {
-                const sourceMatch = edge.dataset.source === id || edge.dataset.target === id;
-                if (sourceMatch)
-                    edge.setAttribute('data-highlight', 'true');
-            });
-        }
-        if (info) {
-            info.innerHTML = '';
-            const titleEl = document.createElement('strong');
-            titleEl.textContent = title;
-            const descEl = document.createElement('p');
-            descEl.style.margin = '4px 0 0 0';
-            descEl.textContent = description || 'Sin descripción disponible.';
-            info.appendChild(titleEl);
-            info.appendChild(descEl);
-            // Show source links if the node has source_ids attached (stored in the rendered node dataset)
-            try {
-                const curEl = canvas.querySelector(`[data-node-id="${id}"]`);
-                const raw = curEl?.dataset?.sourceIds;
-                const srcIds = raw ? JSON.parse(raw) : [];
-                if (Array.isArray(srcIds) && srcIds.length) {
-                    const listWrap = document.createElement('div');
-                    listWrap.style.marginTop = '8px';
-                    const label = document.createElement('div');
-                    label.textContent = 'Fragmentos relacionados:';
-                    label.style.fontSize = '12px';
-                    label.style.marginBottom = '6px';
-                    listWrap.appendChild(label);
-                    const ul = document.createElement('ul');
-                    ul.style.listStyle = 'none';
-                    ul.style.padding = '0';
-                    ul.style.margin = '0';
-                    for (const sid of srcIds) {
-                        const li = document.createElement('li');
-                        li.style.marginBottom = '6px';
-                        const btn = document.createElement('button');
-                        btn.textContent = `Ir al fragmento ${sid.slice(0, 8)}`;
-                        btn.style.padding = '6px 8px';
-                        btn.style.borderRadius = '6px';
-                        btn.style.border = '1px solid #ddd';
-                        btn.style.background = '#fff';
-                        btn.style.cursor = 'pointer';
-                        btn.addEventListener('click', () => {
-                            try {
-                                const targetPage = currentMindMapPageUrl || window.location.href;
-                                chrome.runtime.sendMessage({ type: 'NAVIGATE_TO_SOURCE', payload: { pageUrl: targetPage, sourceId: sid } }, (_resp) => { });
-                            }
-                            catch (e) {
-                                console.error('Failed to request navigate', e);
-                            }
-                        });
-                        const preview = document.createElement('div');
-                        preview.style.fontSize = '12px';
-                        preview.style.color = '#444';
-                        preview.style.marginTop = '6px';
-                        preview.textContent = 'Cargando vista previa...';
-                        // try to load a preview of the saved fragment from storage
-                        try {
-                            chrome.storage.local.get([sid], (res) => {
-                                const item = res?.[sid];
-                                if (item) {
-                                    const txt = (item.original_text || item.summary || item.title || '').replace(/\s+/g, ' ').trim();
-                                    preview.textContent = txt ? txt.slice(0, 220) + (txt.length > 220 ? '…' : '') : 'Sin texto disponible.';
-                                }
-                                else {
-                                    preview.textContent = 'Fragmento no encontrado en el almacenamiento.';
-                                }
-                            });
-                        }
-                        catch (_) {
-                            preview.textContent = 'No se pudo cargar la vista previa.';
-                        }
-                        li.appendChild(btn);
-                        li.appendChild(preview);
-                        ul.appendChild(li);
-                    }
-                    listWrap.appendChild(ul);
-                    info.appendChild(listWrap);
-                }
-            }
-            catch (e) {
-                console.debug('Failed to render source links', e);
-            }
-        }
-    };
-    layoutNodes.forEach((ln) => {
-        const group = document.createElementNS(svgNS, 'g');
-        group.setAttribute('class', 'mindmap-node');
-        group.dataset.nodeId = ln.id;
-        try {
-            group.dataset.sourceIds = JSON.stringify(ln.source_ids || []);
-        }
-        catch (_) {
-            group.dataset.sourceIds = '[]';
-        }
-        if (ln.central)
-            group.dataset.central = 'true';
-        group.setAttribute('tabindex', '0');
-        group.setAttribute('role', 'button');
-        group.setAttribute('aria-label', `Nodo ${ln.titulo}`);
-        const circle = document.createElementNS(svgNS, 'circle');
-        circle.setAttribute('cx', String(ln.x));
-        circle.setAttribute('cy', String(ln.y));
-        circle.setAttribute('r', ln.central ? '38' : '26');
-        group.appendChild(circle);
-        const text = document.createElementNS(svgNS, 'text');
-        text.setAttribute('x', String(ln.x));
-        text.setAttribute('y', String(ln.y + (ln.central ? 6 : 4)));
-        text.setAttribute('text-anchor', 'middle');
-        text.textContent = ln.titulo.slice(0, 24);
-        group.appendChild(text);
-        group.addEventListener('mouseenter', () => highlightNode(ln.id, ln.descripcion, ln.titulo));
-        group.addEventListener('focus', () => highlightNode(ln.id, ln.descripcion, ln.titulo));
-        group.addEventListener('click', () => highlightNode(ln.id, ln.descripcion, ln.titulo));
-        nodesGroup.appendChild(group);
-    });
-    svg.appendChild(nodesGroup);
-    canvas.appendChild(svg);
-    if (info) {
+    if (info)
         info.innerHTML = '';
-        const legend = document.createElement('p');
-        legend.className = 'mindmap-legend';
-        legend.textContent = 'Selecciona un nodo para ver más detalles.';
-        info.appendChild(legend);
-    }
-    highlightNode(centerNode.id, centerNode.descripcion, centerNode.titulo);
-    const statusMessage = updatedAt ? `Mapa actualizado ${formatRelativeTime(updatedAt)}.` : 'Mapa actualizado.';
-    setMindMapStatus(statusMessage, 'success');
+    ensureD3()
+        .then((d3) => {
+        const width = Math.max(400, canvas.clientWidth || 540);
+        const baseHeight = Math.max(280, canvas.clientHeight || 420);
+        const margin = { top: 24, right: 24, bottom: 24, left: 28 };
+        const innerWidth = width - margin.left - margin.right;
+        const innerHeight = baseHeight - margin.top - margin.bottom;
+        const root = d3.hierarchy(data, (d) => (Array.isArray(d.hijos) ? d.hijos : []));
+        root.x0 = innerHeight / 2;
+        root.y0 = 0;
+        const treeLayout = d3.tree().nodeSize([42, 180]);
+        const diagonal = d3
+            .linkHorizontal()
+            .x((d) => d.y)
+            .y((d) => d.x);
+        const collapseBelowDepth = (node, maxDepth) => {
+            if (node.depth >= maxDepth && node.children) {
+                node._children = node.children;
+                node.children = undefined;
+            }
+            const kids = node.children || node._children || [];
+            kids.forEach((child) => collapseBelowDepth(child, maxDepth));
+        };
+        collapseBelowDepth(root, 2);
+        const svg = d3
+            .create('svg')
+            .attr('class', 'mindmap-tree-svg')
+            .attr('width', width)
+            .attr('height', baseHeight)
+            .attr('viewBox', `0 0 ${width} ${baseHeight}`)
+            .attr('role', 'tree');
+        const container = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+        const nodeKey = (node) => node.data.id_referencia || `${node.data.nombre}-${node.depth}`;
+        const highlightNode = (node) => {
+            container
+                .selectAll('g.mindmap-node')
+                .attr('data-highlight', (d) => (d === node ? 'true' : 'false'));
+            if (!info)
+                return;
+            info.innerHTML = '';
+            const title = document.createElement('strong');
+            title.textContent = node.data.nombre;
+            info.appendChild(title);
+            if (node.data.hijos && node.data.hijos.length) {
+                const count = document.createElement('div');
+                count.className = 'mindmap-node-children-count';
+                count.textContent = `${node.data.hijos.length} subtema${node.data.hijos.length === 1 ? '' : 's'}.`;
+                info.appendChild(count);
+            }
+            const refId = node.data.id_referencia;
+            if (refId) {
+                const refWrap = document.createElement('div');
+                refWrap.className = 'mindmap-node-reference';
+                const actionsRow = document.createElement('div');
+                actionsRow.style.display = 'flex';
+                actionsRow.style.alignItems = 'center';
+                actionsRow.style.gap = '8px';
+                const label = document.createElement('span');
+                label.textContent = 'Fragmento relacionado:';
+                label.style.fontSize = '12px';
+                actionsRow.appendChild(label);
+                const navButton = document.createElement('button');
+                navButton.textContent = `Ir a ${refId.slice(0, 8)}`;
+                navButton.className = 'mindmap-button mindmap-reference-button';
+                navButton.addEventListener('click', () => {
+                    try {
+                        const targetPage = currentMindMapPageUrl || window.location.href;
+                        chrome.runtime.sendMessage({ type: 'NAVIGATE_TO_SOURCE', payload: { pageUrl: targetPage, sourceId: refId } }, () => { });
+                    }
+                    catch (err) {
+                        console.error('No se pudo solicitar la navegación al fragmento.', err);
+                    }
+                });
+                actionsRow.appendChild(navButton);
+                refWrap.appendChild(actionsRow);
+                const preview = document.createElement('div');
+                preview.className = 'mindmap-reference-preview';
+                preview.textContent = 'Cargando vista previa...';
+                refWrap.appendChild(preview);
+                try {
+                    chrome.storage?.local?.get([refId], (res) => {
+                        const entry = res?.[refId];
+                        if (entry) {
+                            const txt = (entry.original_text || entry.summary || entry.title || '').replace(/\s+/g, ' ').trim();
+                            preview.textContent = txt ? txt.slice(0, 220) + (txt.length > 220 ? '…' : '') : 'Sin texto disponible.';
+                        }
+                        else {
+                            preview.textContent = 'Fragmento no encontrado en el almacenamiento.';
+                        }
+                    });
+                }
+                catch (err) {
+                    preview.textContent = 'No se pudo cargar la vista previa.';
+                }
+                info.appendChild(refWrap);
+            }
+            const legend = document.createElement('p');
+            legend.className = 'mindmap-legend';
+            legend.textContent = 'Haz clic en un nodo para expandir o contraer sus hijos.';
+            info.appendChild(legend);
+        };
+        const update = (source) => {
+            const duration = 320;
+            treeLayout(root);
+            const nodes = root.descendants();
+            const links = root.links();
+            let left = root;
+            let right = root;
+            root.eachBefore((node) => {
+                if (node.x < left.x)
+                    left = node;
+                if (node.x > right.x)
+                    right = node;
+            });
+            const updatedHeight = Math.max(innerHeight, right.x - left.x + 80);
+            const totalHeight = updatedHeight + margin.top + margin.bottom;
+            svg.attr('height', totalHeight).attr('viewBox', `0 0 ${width} ${totalHeight}`);
+            const transition = svg.transition().duration(duration);
+            const node = container
+                .selectAll('g.mindmap-node')
+                .data(nodes, (d) => nodeKey(d));
+            const nodeEnter = node
+                .enter()
+                .append('g')
+                .attr('class', 'mindmap-node')
+                .attr('data-node-id', (d) => nodeKey(d))
+                .attr('transform', () => `translate(${source.y0 ?? 0},${source.x0 ?? root.x0 ?? 0})`)
+                .attr('tabindex', 0)
+                .attr('role', 'treeitem')
+                .attr('aria-expanded', (d) => (d.children ? 'true' : 'false'))
+                .on('click', (_event, d) => {
+                toggle(d);
+                highlightNode(d);
+            })
+                .on('keydown', (event, d) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    toggle(d);
+                    highlightNode(d);
+                }
+            });
+            nodeEnter
+                .append('circle')
+                .attr('class', 'mindmap-node-circle')
+                .attr('r', 1e-6);
+            nodeEnter
+                .append('text')
+                .attr('class', 'mindmap-node-label')
+                .attr('dy', '0.31em')
+                .attr('x', (d) => (d.children || d._children ? -14 : 14))
+                .attr('text-anchor', (d) => (d.children || d._children ? 'end' : 'start'))
+                .text((d) => d.data.nombre);
+            const nodeUpdate = nodeEnter.merge(node);
+            nodeUpdate
+                .transition(transition)
+                .attr('transform', (d) => `translate(${d.y},${d.x})`)
+                .attr('aria-expanded', (d) => (d.children ? 'true' : 'false'));
+            nodeUpdate
+                .select('circle')
+                .attr('r', 10)
+                .attr('data-collapsed', (d) => ((d._children) ? 'true' : 'false'));
+            nodeUpdate
+                .select('text')
+                .attr('x', (d) => (d.children || d._children ? -14 : 14))
+                .attr('text-anchor', (d) => (d.children || d._children ? 'end' : 'start'))
+                .text((d) => d.data.nombre);
+            const nodeExit = node
+                .exit()
+                .transition(transition)
+                .remove()
+                .attr('transform', () => `translate(${source.y ?? 0},${source.x ?? 0})`);
+            nodeExit.select('circle').attr('r', 1e-6);
+            nodeExit.select('text').style('fill-opacity', 1e-6);
+            const link = container
+                .selectAll('path.mindmap-link')
+                .data(links, (d) => nodeKey(d.target));
+            const linkEnter = link
+                .enter()
+                .append('path')
+                .attr('class', 'mindmap-link')
+                .attr('d', () => {
+                const o = { x: source.x0 ?? root.x0 ?? 0, y: source.y0 ?? 0 };
+                return diagonal({ source: o, target: o });
+            });
+            link
+                .merge(linkEnter)
+                .transition(transition)
+                .attr('d', (d) => diagonal(d));
+            link
+                .exit()
+                .transition(transition)
+                .remove()
+                .attr('d', () => {
+                const o = { x: source.x ?? 0, y: source.y ?? 0 };
+                return diagonal({ source: o, target: o });
+            });
+            nodes.forEach((node) => {
+                node.x0 = node.x;
+                node.y0 = node.y;
+            });
+        };
+        const toggle = (node) => {
+            if (node.children) {
+                node._children = node.children;
+                node.children = undefined;
+            }
+            else if (node._children) {
+                node.children = node._children;
+                node._children = undefined;
+            }
+            update(node);
+        };
+        update(root);
+        highlightNode(root);
+        const nodeElement = svg.node();
+        if (nodeElement) {
+            canvas.appendChild(nodeElement);
+        }
+        const statusMessage = updatedAt ? `Mapa actualizado ${formatRelativeTime(updatedAt)}.` : 'Mapa actualizado.';
+        setMindMapStatus(statusMessage, 'success');
+    })
+        .catch((err) => {
+        console.error('No se pudo inicializar D3 para el mapa conceptual.', err);
+        renderMindMapEmptyState('No se pudo cargar el motor de visualización.');
+        setMindMapStatus('Error al renderizar el mapa.', 'error');
+    });
 }
 function requestMindMapRegeneration() {
     if (!panelRoot)
