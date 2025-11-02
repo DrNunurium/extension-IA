@@ -5,13 +5,11 @@ type SaveChatDataPayload = {
   paragraphIndex?: number;
 };
 
-type MindMapNode = {
-  nombre: string;
-  id_referencia?: string | null;
-  hijos?: MindMapNode[];
+type MindMapData = {
+  titulo_central: string;
+  conceptos_clave: string[];
+  resumen_ejecutivo: string;
 };
-
-type MindMapData = MindMapNode;
 
 const chromeApi = (globalThis as typeof globalThis & { chrome?: any }).chrome;
 
@@ -70,13 +68,19 @@ chromeApi?.runtime?.onMessage.addListener((message: any, sender: any, sendRespon
       (async () => {
         const { messageText, sourceId, pageUrl, paragraphIndex } = payload;
         try {
+          console.debug('Background: SAVE_CHAT_DATA received for sourceId=', sourceId, 'pageUrl=', pageUrl);
           const structured = await saveDataWithGemini(messageText, sourceId, pageUrl, paragraphIndex);
           structured.normalized_page = normalizePageUrl(pageUrl);
 
+          // persist
           await new Promise((resolve, reject) => {
             chromeApi.storage.local.set({ [structured.source_id]: structured }, () => {
               const err = chromeApi.runtime.lastError;
-              if (err) return reject(err);
+              if (err) {
+                console.error('Background: storage.set failed for', structured.source_id, err);
+                return reject(err);
+              }
+              console.debug('Background: storage.set succeeded for', structured.source_id);
               resolve(true);
             });
           });
@@ -95,7 +99,7 @@ chromeApi?.runtime?.onMessage.addListener((message: any, sender: any, sendRespon
           sendResponse({ ok: true, item: structured });
         } catch (err) {
           console.error('SAVE_CHAT_DATA failed', err);
-          sendResponse({ ok: false, error: String(err) });
+          try { sendResponse({ ok: false, error: String(err) }); } catch(_){}
         }
       })();
       return true;
@@ -106,28 +110,28 @@ chromeApi?.runtime?.onMessage.addListener((message: any, sender: any, sendRespon
       if (!pageUrl || !sourceId) return;
       (async () => {
         try {
-          chromeApi.tabs.query({ active: true, currentWindow: true }, (tabs: any[]) => {
-            const active = tabs && tabs[0];
-            if (active && typeof active.id === 'number') {
+          // Prefer sending SCROLL_TO_SOURCE to any existing tab that already has the target page open
+          chromeApi.tabs.query({}, (tabs: any[]) => {
+            const normalizedTarget = normalizePageUrl(pageUrl);
+            const matching = (tabs || []).find((t: any) => normalizePageUrl(t?.url) === normalizedTarget && typeof t.id === 'number');
+            if (matching) {
               try {
-                chromeApi.tabs.sendMessage(active.id, { type: 'SCROLL_TO_SOURCE', payload: { sourceId } }, () => {
+                chromeApi.tabs.sendMessage(matching.id, { type: 'SCROLL_TO_SOURCE', payload: { sourceId } }, () => {
                   const err = chromeApi.runtime.lastError;
                   if (err) {
-                    console.debug('Active tab scroll failed, fallback to new tab', err);
-                    tryOpenInNewTab(pageUrl, sourceId);
-                    sendResponse({ ok: true, fallback: true });
+                    console.debug('sendMessage to matching tab failed', err);
+                    sendResponse({ ok: false, error: 'message_failed' });
                     return;
                   }
                   sendResponse({ ok: true, inPage: true });
                 });
               } catch (e) {
                 console.error('tabs.sendMessage failed', e);
-                tryOpenInNewTab(pageUrl, sourceId);
-                sendResponse({ ok: true, fallback: true });
+                sendResponse({ ok: false, error: String(e) });
               }
             } else {
-              tryOpenInNewTab(pageUrl, sourceId);
-              sendResponse({ ok: true, fallback: true });
+              // Do NOT open a new tab; respond indicating no matching tab was found.
+              sendResponse({ ok: false, error: 'no_matching_tab_in_window' });
             }
           });
         } catch (e) {
@@ -217,6 +221,48 @@ chromeApi?.runtime?.onMessage.addListener((message: any, sender: any, sendRespon
           else sendResponse({ ok: false, error: 'No hay datos suficientes o falta la clave de API.' });
         } catch (e) {
           console.error('GENERATE_MIND_MAP failed', e);
+          sendResponse({ ok: false, error: String(e) });
+        }
+      })();
+      return true;
+    }
+    case 'REMOVE_SAVED_TEXT_MATCH': {
+      // payload: { pattern: string }
+      const pattern = String(message.payload?.pattern || '').trim();
+      if (!pattern) return;
+      (async () => {
+        try {
+          const data: Record<string, any> = await new Promise((resolve) => chromeApi.storage.local.get(null, resolve));
+          const toRemove: string[] = [];
+          const normalizedPages = new Set<string>();
+          const low = pattern.toLowerCase();
+          for (const [k, v] of Object.entries(data)) {
+            if (!v || typeof v !== 'object') continue;
+            if (!(v as any).source_id) continue;
+            const title = String((v as any).title || '').toLowerCase();
+            const orig = String((v as any).original_text || '').toLowerCase();
+            if (title.includes(low) || orig.includes(low)) {
+              toRemove.push(k);
+              const np = (v as any).normalized_page || (v as any).pageUrl || null;
+              if (np) normalizedPages.add(np);
+            }
+          }
+          if (!toRemove.length) { sendResponse({ ok: true, removed: 0 }); return; }
+          await new Promise((resolve, reject) => {
+            chromeApi.storage.local.remove(toRemove, () => {
+              const err = chromeApi.runtime.lastError;
+              if (err) return reject(err);
+              resolve(true);
+            });
+          });
+          try { await rebuildGroupsIndex(); } catch (e) { console.error('rebuildGroupsIndex failed after remove', e); }
+          // regenerate mind maps for affected pages
+          for (const np of Array.from(normalizedPages)) {
+            try { await generateMindMapForPage(typeof np === 'string' ? np : undefined); } catch (e) { /* ignore */ }
+          }
+          sendResponse({ ok: true, removed: toRemove.length, keys: toRemove });
+        } catch (e) {
+          console.error('REMOVE_SAVED_TEXT_MATCH failed', e);
           sendResponse({ ok: false, error: String(e) });
         }
       })();
@@ -369,20 +415,32 @@ async function getApiKey(): Promise<string | null> {
   return null;
 }
 
-async function callGeminiMindMap(apiKey: string, conversationText: string): Promise<MindMapData | null> {
-  const schemaDescription = `{
-  "type": "object",
-  "properties": {
-    "nombre": { "type": "string", "description": "Tema o subtema" },
-    "id_referencia": { "type": "string", "description": "ID del fragmento original (por ejemplo, ID:abc123). Puede ser null si no aplica." },
-    "hijos": {
-      "type": "array",
-      "items": { "$ref": "#" },
-      "description": "Subtemas o conceptos anidados"
+const MAPA_MENTAL_SCHEMA_PLANO = {
+  type: 'object',
+  description: 'Lista plana de componentes para un mapa conceptual.',
+  properties: {
+    titulo_central: {
+      type: 'string',
+      description: 'El tema principal y conciso de toda la conversación.'
+    },
+    conceptos_clave: {
+      type: 'array',
+      description: 'Lista de 5 a 7 conceptos clave extraídos del texto.',
+      items: {
+        type: 'string',
+        description: 'Un concepto clave, idea o estadística extraída.'
+      }
+    },
+    resumen_ejecutivo: {
+      type: 'string',
+      description: 'Un resumen de la conversación de no más de 50 palabras.'
     }
   },
-  "required": ["nombre", "hijos"]
-}`;
+  required: ['titulo_central', 'conceptos_clave', 'resumen_ejecutivo']
+} as const;
+
+async function callGeminiMindMap(apiKey: string, conversationText: string): Promise<MindMapData | null> {
+  const schemaDescription = JSON.stringify(MAPA_MENTAL_SCHEMA_PLANO, null, 2);
 
   const MODEL_FALLBACK_PREFERENCE = [
     'models/gemini-1.5-flash',
@@ -391,7 +449,20 @@ async function callGeminiMindMap(apiKey: string, conversationText: string): Prom
     'models/text-bison-002'
   ];
 
-  let basePrompt = `**TAREA ESTRICTA:** Analiza el texto de la conversación y genera un árbol jerárquico en formato JSON estricto.\n**REGLAS:**\n1. NO DEBES incluir ninguna palabra, explicación, comentario o carácter ANTES O DESPUÉS del objeto JSON.\n2. La respuesta DEBE ser el JSON puro y nada más.\n3. El JSON debe comenzar con '{' y terminar con '}'.\n4. Sigue el esquema proporcionado exactamente. Cada nodo debe tener la propiedad "nombre" y el contenedor "hijos" (usa un arreglo vacío si no hay subtemas).\n5. Usa el campo "id_referencia" para vincular cada nodo con el identificador del fragmento original indicado entre corchetes (por ejemplo, [ID:abc123]). Si no encuentras un ID claro, usa null.\n\n**ESQUEMA A RESPETAR:** ${schemaDescription}\n\n**CONVERSACIÓN:**\n"""\n${conversationText}\n"""`;
+  let basePrompt = `Analiza la siguiente conversación. Genera estrictamente un objeto JSON que se ajuste al esquema proporcionado. Identifica los conceptos más importantes y un resumen conciso.
+Instrucciones obligatorias:
+- Devuelve SOLO el objeto JSON sin ningún texto adicional ni bloques de código.
+- No incluyas saltos de línea \n ni comillas dobles " dentro de los valores de texto.
+- Limita el resumen a un máximo de 50 palabras.
+- Entrega entre 5 y 7 conceptos clave relevantes.
+
+Esquema esperado:
+${schemaDescription}
+
+Texto de la conversación:
+"""
+${conversationText}
+"""`;
 
   // Helper: recursively collect string values from the API response to find text candidates
   function collectStringValues(obj: any, acc: string[]) {
@@ -495,26 +566,15 @@ async function callGeminiMindMap(apiKey: string, conversationText: string): Prom
   async function forcedExampleRetry(currentModel: string): Promise<MindMapData | null> {
     try {
       const example: MindMapData = {
-        nombre: 'Tema de ejemplo',
-        id_referencia: 'ID:ejemplo-root',
-        hijos: [
-          {
-            nombre: 'Subtema 1',
-            id_referencia: 'ID:subtema-1',
-            hijos: []
-          },
-          {
-            nombre: 'Subtema 2',
-            id_referencia: null,
-            hijos: [
-              {
-                nombre: 'Detalle 2.1',
-                id_referencia: 'ID:detalle-21',
-                hijos: []
-              }
-            ]
-          }
-        ]
+        titulo_central: 'Tema de ejemplo',
+        conceptos_clave: [
+          'Aspecto clave 1',
+          'Aspecto clave 2',
+          'Aspecto clave 3',
+          'Aspecto clave 4',
+          'Aspecto clave 5'
+        ],
+        resumen_ejecutivo: 'Resumen sintético del tema en menos de cincuenta palabras.'
       };
       const exampleStr = JSON.stringify(example, null, 2);
       const forcedPrompt = 'URGENTE: Devuelve SOLO el objeto JSON EXACTO que siga este ejemplo: ' + exampleStr + '\nAhora, usando la conversación anterior: ' + basePrompt;
@@ -754,17 +814,19 @@ function parseJsonStrict(raw: string): any {
 }
 
 function isValidMindMap(value: any): value is MindMapData {
-  function validateNode(node: any, depth: number): boolean {
-    if (!node || typeof node !== 'object') return false;
-    if (typeof node.nombre !== 'string' || !node.nombre.trim()) return false;
-    if (node.id_referencia != null && typeof node.id_referencia !== 'string') return false;
-    if (node.hijos == null) return true;
-    if (!Array.isArray(node.hijos)) return false;
-    if (node.hijos.length === 0 && depth === 0) return true;
-    return node.hijos.every((child) => validateNode(child, depth + 1));
-  }
+  if (!value || typeof value !== 'object') return false;
 
-  return validateNode(value, 0);
+  const titulo = (value as any).titulo_central;
+  if (typeof titulo !== 'string' || !titulo.trim()) return false;
+
+  const conceptos = (value as any).conceptos_clave;
+  if (!Array.isArray(conceptos) || conceptos.length < 5 || conceptos.length > 7) return false;
+  if (!conceptos.every((item) => typeof item === 'string' && !!item.trim())) return false;
+
+  const resumen = (value as any).resumen_ejecutivo;
+  if (typeof resumen !== 'string' || !resumen.trim()) return false;
+
+  return true;
 }
 
 function notifyMindMapUpdated(normalized: string, map: MindMapData) {
@@ -827,3 +889,79 @@ function tryOpenInNewTab(pageUrl: string, sourceId: string) {
     chromeApi.tabs.onUpdated.addListener(listener);
   });
 }
+
+// One-time startup cleanup: remove saved snippets whose text/title/summary
+// include known unwanted phrases. This runs when the service worker starts and
+// permanently deletes matching storage entries so they won't reappear.
+async function runStartupSavedTextCleanup(): Promise<void> {
+  try {
+    const bannedPhrases = [
+      // Primary short identifier (will match partials)
+      'Método para navegación rápida en conversación',
+      // Full block (in case saved verbatim)
+      `Método para navegación rápida en conversación\nConceptos clave\nMétodo\nFacilitar usuario\nVolver a conversación\nNavegación rápida\nDividir tarea\nTres fases\nResumen ejecutivo\nSe presenta un método para que el usuario pueda regresar rápidamente a secciones previas de una conversación. La tarea se estructura en tres fases para optimizar la navegación y la experiencia del usuario.`
+    ];
+
+    const allData: Record<string, any> = await new Promise((resolve) => chromeApi.storage.local.get(null, resolve));
+    const toRemove: string[] = [];
+    const affectedPages = new Set<string>();
+
+    for (const [k, v] of Object.entries(allData)) {
+      if (!v || typeof v !== 'object') continue;
+      // Only consider saved-snippet shaped objects
+      if (!(v as any).source_id) continue;
+      try {
+        const combined = `${String((v as any).title || '')} ${String((v as any).summary || '')} ${String((v as any).original_text || '')}`.toLowerCase();
+        for (const bp of bannedPhrases) {
+          if (!bp) continue;
+          if (combined.includes(bp.toLowerCase())) {
+            toRemove.push(k);
+            const np = (v as any).normalized_page || (v as any).pageUrl || null;
+            if (np) affectedPages.add(String(np));
+            break;
+          }
+        }
+      } catch (e) {
+        // ignore individual parse errors
+      }
+    }
+
+    if (!toRemove.length) {
+      console.debug('Startup cleanup: no saved items matched banned phrases');
+      return;
+    }
+
+    await new Promise((resolve, reject) => {
+      chromeApi.storage.local.remove(toRemove, () => {
+        const err = chromeApi.runtime.lastError;
+        if (err) return reject(err);
+        resolve(true);
+      });
+    });
+
+    try {
+      await rebuildGroupsIndex();
+    } catch (e) {
+      console.error('rebuildGroupsIndex failed after startup cleanup', e);
+    }
+
+    // Regenerate mind maps for affected pages to reflect removals
+    for (const np of Array.from(affectedPages)) {
+      try {
+        await generateMindMapForPage(np);
+      } catch (e) {
+        // ignore per-page failures
+      }
+    }
+
+    console.info('Startup cleanup removed saved keys:', toRemove.length, toRemove);
+  } catch (e) {
+    console.error('runStartupSavedTextCleanup failed', e);
+  }
+}
+
+// Kick off cleanup now (non-blocking)
+try {
+  // Fire and forget; keep service worker start fast
+  void runStartupSavedTextCleanup();
+} catch (_) {}
