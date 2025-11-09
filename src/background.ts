@@ -110,29 +110,33 @@ chromeApi?.runtime?.onMessage.addListener((message: any, sender: any, sendRespon
       if (!pageUrl || !sourceId) return;
       (async () => {
         try {
+          const requestingTabId = sender?.tab && typeof sender.tab.id === 'number' ? sender.tab.id : null;
           // Prefer sending SCROLL_TO_SOURCE to any existing tab that already has the target page open
           chromeApi.tabs.query({}, (tabs: any[]) => {
             const normalizedTarget = normalizePageUrl(pageUrl);
             const matching = (tabs || []).find((t: any) => normalizePageUrl(t?.url) === normalizedTarget && typeof t.id === 'number');
             if (matching) {
-              try {
-                chromeApi.tabs.sendMessage(matching.id, { type: 'SCROLL_TO_SOURCE', payload: { sourceId } }, () => {
-                  const err = chromeApi.runtime.lastError;
-                  if (err) {
-                    console.debug('sendMessage to matching tab failed', err);
-                    sendResponse({ ok: false, error: 'message_failed' });
-                    return;
-                  }
-                  sendResponse({ ok: true, inPage: true });
-                });
-              } catch (e) {
-                console.error('tabs.sendMessage failed', e);
-                sendResponse({ ok: false, error: String(e) });
-              }
-            } else {
-              // Do NOT open a new tab; respond indicating no matching tab was found.
-              sendResponse({ ok: false, error: 'no_matching_tab_in_window' });
+              scheduleHighlightForTab(matching.id, sourceId, (ok) => {
+                sendResponse(ok ? { ok: true, inPage: true } : { ok: false, error: 'message_failed' });
+              });
+              return;
             }
+
+            if (requestingTabId && pageUrl) {
+              navigateExistingTabToSource(requestingTabId, pageUrl, sourceId, (result) => {
+                sendResponse(result);
+              });
+              return;
+            }
+
+            if (pageUrl) {
+              tryOpenInNewTab(pageUrl, sourceId);
+              sendResponse({ ok: true, openedNewTab: true });
+              return;
+            }
+
+            // No tab to reuse and no requesting tab id -> cannot navigate
+            sendResponse({ ok: false, error: 'no_matching_tab_in_window' });
           });
         } catch (e) {
           console.error('NAVIGATE_TO_SOURCE failed', e);
@@ -279,7 +283,25 @@ function normalizePageUrl(url?: string | null): string | null {
     const parsed = new URL(url);
     let path = parsed.pathname || '/';
     if (path !== '/' && path.endsWith('/')) path = path.slice(0, -1);
-    return `${parsed.origin}${path}`;
+
+    // Canonicalize search params (sorted order) so SPA routes relying on query
+    // segments are stable per conversation.
+    const params: Array<[string, string]> = [];
+    parsed.searchParams.forEach((value, key) => { params.push([key, value]); });
+    params.sort((a, b) => {
+      if (a[0] === b[0]) {
+        if (a[1] === b[1]) return 0;
+        return a[1] < b[1] ? -1 : 1;
+      }
+      return a[0] < b[0] ? -1 : 1;
+    });
+    const canonicalSearch = params.length
+      ? '?' + params.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
+      : '';
+
+    const hash = parsed.hash && parsed.hash !== '#' ? parsed.hash : '';
+
+    return `${parsed.origin}${path}${canonicalSearch}${hash}`;
   } catch (e) {
     console.debug('normalizePageUrl failed', e);
     return null;
@@ -844,6 +866,93 @@ function notifyMindMapUpdated(normalized: string, map: MindMapData) {
   });
 }
 
+function scheduleHighlightForTab(tabId: number, sourceId: string, callback: (ok: boolean) => void): void {
+  try {
+    chromeApi.tabs.sendMessage(tabId, { type: 'SCROLL_TO_SOURCE', payload: { sourceId } }, () => {
+      const err = chromeApi.runtime.lastError;
+      if (!err) {
+        callback(true);
+        return;
+      }
+
+      try {
+        chromeApi.scripting.executeScript({
+          target: { tabId },
+          func: (sid: string) => {
+            try {
+              const selector = `[data-source-id="${sid}"]`;
+              const altSelector = `[data-message-id="${sid}"]`;
+              let el = document.querySelector(selector) as HTMLElement | null;
+              if (!el) el = document.querySelector(altSelector) as HTMLElement | null;
+              if (!el) {
+                el = Array.from(document.querySelectorAll<HTMLElement>('*')).find((e) => {
+                  const ds = e.dataset as any;
+                  return ds && (ds.sourceId === sid || ds.messageId === sid);
+                }) || null;
+              }
+              if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                const prev = el.style.outline;
+                el.style.outline = '3px solid #ffb86b';
+                setTimeout(() => { el.style.outline = prev; }, 4000);
+                return true;
+              }
+              return false;
+            } catch (highlightErr) {
+              console.error(highlightErr);
+              return false;
+            }
+          },
+          args: [sourceId]
+        }, () => {
+          const execErr = chromeApi.runtime.lastError;
+          if (execErr) {
+            console.error('Failed to execute highlight script', execErr);
+            callback(false);
+          } else {
+            callback(true);
+          }
+        });
+      } catch (execErrOuter) {
+        console.error('Failed to execute highlight script', execErrOuter);
+        callback(false);
+      }
+    });
+  } catch (sendErr) {
+    console.error('tabs.sendMessage highlight failed', sendErr);
+    callback(false);
+  }
+}
+
+function navigateExistingTabToSource(tabId: number, targetUrl: string, sourceId: string, callback: (result: { ok: boolean; [key: string]: any }) => void): void {
+  try {
+    chromeApi.tabs.update(tabId, { url: targetUrl, active: true }, () => {
+      const updateErr = chromeApi.runtime.lastError;
+      if (updateErr) {
+        console.error('tabs.update failed', updateErr);
+        callback({ ok: false, error: 'tab_update_failed' });
+        return;
+      }
+
+      const listener = (updatedTabId: number, changeInfo: any) => {
+        if (updatedTabId !== tabId) return;
+        if (changeInfo.status === 'complete') {
+          chromeApi.tabs.onUpdated.removeListener(listener);
+          scheduleHighlightForTab(tabId, sourceId, (ok) => {
+            if (!ok) console.debug('Highlight after navigation may have failed for source', sourceId);
+          });
+        }
+      };
+
+      chromeApi.tabs.onUpdated.addListener(listener);
+      callback({ ok: true, navigated: true });
+    });
+  } catch (e) {
+    console.error('navigateExistingTabToSource failed', e);
+    callback({ ok: false, error: String(e) });
+  }
+}
+
 function tryOpenInNewTab(pageUrl: string, sourceId: string) {
   chromeApi.tabs.create({ url: pageUrl, active: true }, (tab: any) => {
     const tabId: number = tab.id as number;
@@ -851,39 +960,7 @@ function tryOpenInNewTab(pageUrl: string, sourceId: string) {
       if (updatedTabId !== tabId) return;
       if (changeInfo.status === 'complete') {
         chromeApi.tabs.onUpdated.removeListener(listener);
-        try {
-          chromeApi.scripting.executeScript({
-            target: { tabId },
-            func: (sid: string) => {
-              try {
-                const selector = `[data-source-id="${sid}"],[data-message-id="${sid}"]`;
-                let el = document.querySelector(selector) as HTMLElement | null;
-                if (!el) {
-                  el = Array.from(document.querySelectorAll('*')).find((e) => {
-                    const ds = (e as HTMLElement).dataset as any;
-                    return ds && (ds.sourceId === sid || ds.messageId === sid);
-                  }) as HTMLElement | null;
-                }
-                if (el) {
-                  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  const prev = el.style.outline;
-                  el.style.outline = '3px solid #ffb86b';
-                  setTimeout(() => {
-                    el.style.outline = prev;
-                  }, 4000);
-                  return true;
-                }
-                return false;
-              } catch (e) {
-                console.error(e);
-                return false;
-              }
-            },
-            args: [sourceId]
-          });
-        } catch (execErr) {
-          console.error('Failed to execute highlight script', execErr);
-        }
+        scheduleHighlightForTab(tabId, sourceId, () => { /* ignore result */ });
       }
     };
     chromeApi.tabs.onUpdated.addListener(listener);
