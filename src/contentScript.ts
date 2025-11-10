@@ -104,7 +104,8 @@ function ensurePanelHost() {
     header.style.justifyContent = 'space-between';
     header.style.alignItems = 'center';
     const title = document.createElement('div');
-    title.textContent = 'Mapa conceptual';
+    // Title intentionally left blank to save vertical space in the panel
+    title.textContent = '';
     title.style.fontWeight = '600';
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '✕';
@@ -113,6 +114,28 @@ function ensurePanelHost() {
     closeBtn.style.cursor = 'pointer';
     closeBtn.addEventListener('click', () => destroyPanel());
     header.appendChild(title);
+    // Add a static Buy Me a Coffee link/button instead of injecting their remote script
+    // (CSP often blocks external scripts inside extension panels). This is a simpler
+    // fallback that opens the profile in a new tab without loading external JS.
+    try {
+        if (!document.getElementById('ia-bmc-link')) {
+            const bmcLink = document.createElement('a');
+            bmcLink.id = 'ia-bmc-link';
+            bmcLink.href = 'https://www.buymeacoffee.com/nurielazemf';
+            bmcLink.target = '_blank';
+            bmcLink.rel = 'noopener noreferrer';
+            bmcLink.textContent = '☕ Buy me a coffee';
+            bmcLink.style.marginLeft = '8px';
+            bmcLink.style.padding = '6px 8px';
+            bmcLink.style.background = '#FFDD00';
+            bmcLink.style.color = '#000';
+            bmcLink.style.borderRadius = '6px';
+            bmcLink.style.textDecoration = 'none';
+            bmcLink.style.fontWeight = '600';
+            header.appendChild(bmcLink);
+        }
+    }
+    catch (_) { /* ignore */ }
     header.appendChild(closeBtn);
     const content = document.createElement('div');
     content.id = IDS.PANEL_CONTENT;
@@ -149,9 +172,7 @@ function renderMindMap(map) {
     const mapSection = document.createElement('div');
     mapSection.id = 'ia-map-section';
     if (!map) {
-        const p = document.createElement('p');
-        p.textContent = 'No hay mapa disponible para esta página.';
-        mapSection.appendChild(p);
+        // no map: intentionally render nothing to keep the panel compact
     }
     else {
         const h = document.createElement('h3');
@@ -358,7 +379,7 @@ function renderSavedItems(items) {
         navBtn.style.cursor = 'pointer';
         navBtn.style.padding = '6px 8px';
         navBtn.style.border = 'none';
-        navBtn.style.background = '#1e40af';
+        navBtn.style.background = '#5fc723ff';
         navBtn.style.color = '#fff';
         navBtn.style.borderRadius = '4px';
         navBtn.addEventListener('click', (ev) => {
@@ -705,6 +726,16 @@ function safeSendMessage(message, cb) {
 // Selection save button
 let selectionBtn = null;
 let selectionTimer;
+// Toggle to disable floating diskette save buttons entirely (message/fragment level)
+const DISABLE_SAVE_BUTTONS = true;
+
+// If disabling, remove any previously injected save buttons that may exist in the page
+try {
+    if (DISABLE_SAVE_BUTTONS) {
+        Array.from(document.querySelectorAll('.ia-save-btn')).forEach(n => { try { n.remove(); } catch (_) { } });
+    }
+}
+catch (_) { }
 function makeSelectionButton() {
     if (selectionBtn)
         return selectionBtn;
@@ -713,7 +744,17 @@ function makeSelectionButton() {
     b.type = 'button';
     b.textContent = 'Guardar selección';
     Object.assign(b.style, {
-        position: 'fixed', zIndex: '2147483647', padding: '6px 10px', display: 'none', background: '#fff', border: '1px solid #ddd', cursor: 'pointer'
+        position: 'fixed',
+        zIndex: '2147483647',
+        padding: '6px 10px',
+        display: 'none',
+        background: '#fff',
+        color: '#0f172a',
+        border: '1px solid #cfcfcf',
+        borderRadius: '6px',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+        cursor: 'pointer',
+        fontWeight: '600'
     });
     b.addEventListener('click', (ev) => {
         ev.stopPropagation();
@@ -935,6 +976,8 @@ function createFloatingButton(scope) {
     return b;
 }
 function injectInto(container) {
+    if (DISABLE_SAVE_BUTTONS)
+        return; // no-op when save buttons are disabled
     try {
         if (container.querySelector('.ia-save-btn'))
             return;
