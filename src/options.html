@@ -25,6 +25,18 @@
       </div>
     </form>
     <p id="status"></p>
+
+    <hr />
+    <h2>Panel (UI)</h2>
+    <p>Personaliza el color del borde del panel. Si no especificas color, el panel usará el color por defecto o el meta theme-color de la pestaña activa.</p>
+    <div style="display:flex;gap:8px;align-items:center;max-width:380px;">
+      <input id="panelAccentColor" type="color" />
+      <input id="panelAccentColorText" type="text" placeholder="#rrggbb" style="flex:1;" />
+      <button id="savePanelColor">Guardar</button>
+      <button id="clearPanelColor">Borrar</button>
+    </div>
+    <p id="panelColorStatus" style="margin-top:8px;color:#2f855a"></p>
+
     <script type="module" src="options.js"></script>
   </body>
 </html>

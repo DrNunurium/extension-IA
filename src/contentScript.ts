@@ -6,7 +6,15 @@ const IDS = {
     PANEL_HOST: 'ia-sidepanel-host',
     PANEL_CONTENT: 'ia-sidepanel-content'
 };
+const PANEL_FONT = "'Roboto','Noto Sans','Segoe UI',Arial,sans-serif";
 let currentSavedItems = [];
+let currentSearchQuery = '';
+let searchInputEl = null;
+const chromeRuntime = globalThis.chrome?.runtime ?? null;
+const PANEL_STYLE_ID = 'ia-panel-theme';
+let panelHostElement = null;
+let panelShadowRoot = null;
+let panelKeydownHandler = null;
 // Phrases to hide and remove from storage/UI (case-insensitive substrings).
 const BANNED_PHRASES = [
     // Keep only highly specific phrases so legitimate snippets are not removed.
@@ -48,172 +56,624 @@ function normalizeUrlString(raw) {
     }
 }
 function getNormalizedPageKey(url) {
-    const first = normalizeUrlString(url);
-    if (first)
-        return first;
-    const fallback = normalizeUrlString(globalThis.location?.href ?? null);
-    return fallback ?? (globalThis.location?.href ?? '');
+    const candidate = typeof url === 'string' && url ? url : globalThis.location?.href ?? '';
+    const normalized = normalizeUrlString(candidate);
+    return normalized ?? candidate;
 }
+
 function normalizeForSearch(text) {
-    return text.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!text)
+        return '';
+    return String(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
-const chromeRuntime = globalThis.chrome?.runtime;
-function ensurePanelHost() {
-    let host = document.getElementById(IDS.PANEL_HOST);
-    if (host && host.isConnected) {
-        // If we previously created the ShadowRoot in closed mode we store a
-        // reference on the host element so we can reuse it. Avoid accessing
-        // host.shadowRoot because closed mode returns null.
-        const existing = host.__ia_shadow;
-        if (existing)
-            return existing;
-        // fallback: try host.shadowRoot (may be null) and return if present
-        if (host.shadowRoot)
-            return host.shadowRoot;
-        // otherwise continue to recreate below (shouldn't usually happen)
+
+function getChromeThemeColors() {
+    const prefersDark = globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.matches ?? false;
+    if (prefersDark) {
+        return {
+            isDark: true,
+            panelBg: '#202124',
+            cardBg: '#2d2f31',
+            cardBorder: 'rgba(223,225,229,0.12)',
+            cardShadow: '0 1px 2px rgba(0,0,0,0.25)',
+            textPrimary: '#e8eaed',
+            textSecondary: '#9aa0a6',
+            inputBg: '#303134',
+            inputBorder: 'rgba(223,225,229,0.16)',
+            inputText: '#e8eaed',
+            accent: '#8ab4f8',
+            accentText: '#202124',
+            messageBg: 'rgba(138,180,248,0.18)'
+        };
     }
-    host = document.createElement('div');
-    host.id = IDS.PANEL_HOST;
-    host.style.position = 'fixed';
-    host.style.right = '0';
-    host.style.top = '0';
-    host.style.height = '100vh';
-    host.style.zIndex = String(2147483647 - 1);
-    const shadow = host.attachShadow({ mode: 'closed' });
+    return {
+        isDark: false,
+        panelBg: '#ffffff',
+        cardBg: '#f8f9fa',
+        cardBorder: 'rgba(60,64,67,0.2)',
+        cardShadow: '0 1px 2px rgba(60,64,67,0.3)',
+        textPrimary: '#202124',
+        textSecondary: '#5f6368',
+        inputBg: '#ffffff',
+        inputBorder: 'rgba(60,64,67,0.26)',
+        inputText: '#202124',
+        accent: '#1a73e8',
+        accentText: '#ffffff',
+        messageBg: 'rgba(26,115,232,0.12)'
+    };
+}
+
+function applyPanelChromeStyles(shadow, colors) {
+    if (!shadow)
+        return;
+    let styleEl = shadow.getElementById(PANEL_STYLE_ID);
+    if (!styleEl) {
+        styleEl = document.createElement('style');
+        styleEl.id = PANEL_STYLE_ID;
+        shadow.appendChild(styleEl);
+    }
+    styleEl.textContent = `
+        /* keep host layout and inline styles intact; only set font and color */
+        :host {
+            font-family: ${PANEL_FONT};
+            color: ${colors.textPrimary};
+        }
+        *, *::before, *::after {
+            box-sizing: border-box;
+            font-family: inherit;
+        }
+        #${IDS.PANEL_CONTENT} {
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            width: 100%;
+            background: ${colors.panelBg};
+            color: ${colors.textPrimary};
+            overflow-y: auto;
+            overscroll-behavior: contain;
+        }
+        #${IDS.PANEL_CONTENT}::-webkit-scrollbar {
+            width: 12px;
+        }
+        #${IDS.PANEL_CONTENT}::-webkit-scrollbar-thumb {
+            background-color: ${colors.isDark ? '#5f6368' : '#c4c7c9'};
+            border-radius: 999px;
+            border: 3px solid ${colors.panelBg};
+        }
+        #${IDS.PANEL_CONTENT}::-webkit-scrollbar-track {
+            background: ${colors.isDark ? '#202124' : '#f1f3f4'};
+        }
+    `;
+}
+
+// Attempt to patch page-level KaTeX/MathJax by asking the background script to
+// run the sanitizer in the page context via scripting.executeScript. Inline
+// script injection is blocked by many page CSPs, so we avoid creating
+// script.textContent to prevent CSP failures.
+function injectMathSanitizer() {
     try {
-        // store a reference on the host so future callers can access the closed ShadowRoot
-        Object.defineProperty(host, '__ia_shadow', { value: shadow, configurable: true });
+        if (!chromeRuntime || !chromeRuntime.sendMessage) return;
+        // Ask background to execute the sanitizer in the page (background will
+        // use chrome.scripting.executeScript targeting this tab). We don't need
+        // the response except for logging.
+        chromeRuntime.sendMessage({ type: 'INJECT_MATH_SANITIZER' }, (resp) => {
+            try {
+                // resp may be { ok: true } or an error object
+                if (!resp || !resp.ok) {
+                    console.debug('Math sanitizer injection reported failure or no response', resp);
+                }
+            }
+            catch (e) { /* ignore */ }
+        });
+    }
+    catch (e) { /* ignore */ }
+}
+
+// Ask the background to inject the sanitizer early
+try { injectMathSanitizer(); } catch (e) { /* ignore */ }
+
+function applyPanelHostFrame(colors) {
+    if (!panelHostElement)
+        return;
+    // thicker border to match active-window color
+    panelHostElement.style.border = `6px solid ${colors.accent}`;
+    panelHostElement.style.background = colors.panelBg;
+    panelHostElement.style.boxShadow = colors.isDark
+        ? '0 6px 18px rgba(0,0,0,0.45)'
+        : '0 6px 18px rgba(32,33,36,0.18)';
+}
+
+function getBrowserAccentColor(timeoutMs = 300) {
+    return new Promise((resolve) => {
+        try {
+            if (!chromeRuntime || !chromeRuntime.sendMessage) {
+                resolve(null);
+                return;
+            }
+            let done = false;
+            const timer = setTimeout(() => {
+                if (done)
+                    return;
+                done = true;
+                resolve(null);
+            }, timeoutMs);
+            chromeRuntime.sendMessage({ type: 'GET_CHROME_ACTIVE_COLOR' }, (resp) => {
+                if (done)
+                    return;
+                done = true;
+                clearTimeout(timer);
+                try {
+                    if (resp && resp.color)
+                        resolve(String(resp.color));
+                    else
+                        resolve(null);
+                }
+                catch (_) {
+                    resolve(null);
+                }
+            });
+        }
+        catch (_) { resolve(null); }
+    });
+}
+
+function ensurePanelHost() {
+    if (panelShadowRoot && panelHostElement && panelHostElement.isConnected) {
+        const existing = panelShadowRoot.getElementById(IDS.PANEL_CONTENT);
+        if (!existing) {
+            const content = document.createElement('div');
+            content.id = IDS.PANEL_CONTENT;
+            panelShadowRoot.appendChild(content);
+        }
+        return panelShadowRoot;
+    }
+    if (!document.body)
+        return null;
+    if (!panelHostElement || !panelHostElement.isConnected) {
+        const existingHost = document.getElementById(IDS.PANEL_HOST);
+        if (existingHost) {
+            try {
+                existingHost.remove();
+            }
+            catch (_) { }
+        }
+        panelHostElement = document.createElement('div');
+        panelHostElement.id = IDS.PANEL_HOST;
+        Object.assign(panelHostElement.style, {
+            position: 'fixed',
+            top: '0',
+            right: '0',
+            width: '360px',
+            maxWidth: 'min(360px, 40vw)',
+            height: '100vh',
+            zIndex: '2147483645',
+            display: 'flex',
+            flexDirection: 'column',
+            boxShadow: '0 0 16px rgba(0,0,0,0.18)'
+        });
+        document.body.appendChild(panelHostElement);
+    }
+    try {
+        panelShadowRoot = panelHostElement.shadowRoot || panelHostElement.attachShadow({ mode: 'open' });
     }
     catch (_) {
-        // ignore if host is not extensible
-        host.__ia_shadow = shadow;
+        panelShadowRoot = null;
+        return null;
     }
-    const container = document.createElement('div');
-    container.style.width = '360px';
-    container.style.height = '100%';
-    container.style.boxShadow = '-6px 12px 24px rgba(0,0,0,0.12)';
-    container.style.background = '#fff';
-    container.style.display = 'flex';
-    container.style.flexDirection = 'column';
-    // Use a nicer UI font for the panel and cards; fall back to common system fonts.
-    container.style.fontFamily = "Inter, 'Segoe UI', Roboto, system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif";
-    const header = document.createElement('div');
-    header.style.padding = '10px';
-    header.style.borderBottom = '1px solid #e6e6e6';
-    header.style.display = 'flex';
-    header.style.justifyContent = 'space-between';
-    header.style.alignItems = 'center';
-    const title = document.createElement('div');
-    // Title intentionally left blank to save vertical space in the panel
-    title.textContent = '';
-    title.style.fontWeight = '600';
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = '✕';
-    closeBtn.style.border = 'none';
-    closeBtn.style.background = 'transparent';
-    closeBtn.style.cursor = 'pointer';
-    closeBtn.addEventListener('click', () => destroyPanel());
-    header.appendChild(title);
-    // Add a static Buy Me a Coffee link/button instead of injecting their remote script
-    // (CSP often blocks external scripts inside extension panels). This is a simpler
-    // fallback that opens the profile in a new tab without loading external JS.
-    try {
-        if (!document.getElementById('ia-bmc-link')) {
-            const bmcLink = document.createElement('a');
-            bmcLink.id = 'ia-bmc-link';
-            bmcLink.href = 'https://www.buymeacoffee.com/nurielazemf';
-            bmcLink.target = '_blank';
-            bmcLink.rel = 'noopener noreferrer';
-            bmcLink.textContent = '☕ Buy me a coffee';
-            bmcLink.style.marginLeft = '8px';
-            bmcLink.style.padding = '6px 8px';
-            bmcLink.style.background = '#FFDD00';
-            bmcLink.style.color = '#000';
-            bmcLink.style.borderRadius = '6px';
-            bmcLink.style.textDecoration = 'none';
-            bmcLink.style.fontWeight = '600';
-            header.appendChild(bmcLink);
+    panelShadowRoot.innerHTML = '';
+    const baseStyle = document.createElement('style');
+    baseStyle.textContent = `
+        :host, :host * {
+            box-sizing: border-box;
         }
-    }
-    catch (_) { /* ignore */ }
-    header.appendChild(closeBtn);
+    `;
+    panelShadowRoot.appendChild(baseStyle);
     const content = document.createElement('div');
     content.id = IDS.PANEL_CONTENT;
-    content.style.padding = '12px';
-    content.style.overflow = 'auto';
-    content.style.flex = '1';
-    container.appendChild(header);
-    container.appendChild(content);
-    shadow.appendChild(container);
-    // Inject font import and some base styles into the shadow root so card typography is consistent.
+    content.style.boxSizing = 'border-box';
+    content.style.display = 'flex';
+    content.style.flexDirection = 'column';
+    content.style.height = '100%';
+    panelShadowRoot.appendChild(content);
+    // add close button in the top-right corner of the panel
     try {
-        const fontStyle = document.createElement('style');
-        fontStyle.id = 'ia-panel-fonts';
-        fontStyle.textContent = "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');\n" +
-            `#${IDS.PANEL_CONTENT} { font-family: ${container.style.fontFamily}; font-size: 13px; color: #111; }`;
-        shadow.appendChild(fontStyle);
+        const btn = document.createElement('button');
+        btn.id = 'ia-panel-close';
+        btn.type = 'button';
+        btn.textContent = '✕';
+        Object.assign(btn.style, {
+            position: 'absolute',
+            top: '8px',
+            right: '8px',
+            width: '34px',
+            height: '34px',
+            borderRadius: '8px',
+            border: 'none',
+            background: 'transparent',
+            color: getChromeThemeColors().textSecondary,
+            cursor: 'pointer',
+            fontSize: '16px',
+            lineHeight: '1',
+            padding: '0'
+        });
+        btn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            destroyPanel();
+        });
+        // keyboard handler: Escape closes panel
+        panelKeydownHandler = (e) => {
+            if (e.key === 'Escape')
+                destroyPanel();
+        };
+        document.addEventListener('keydown', panelKeydownHandler);
+        panelShadowRoot.appendChild(btn);
     }
-    catch (_) { /* ignore network/import errors */ }
-    document.documentElement.appendChild(host);
-    return shadow;
+    catch (_) { }
+    return panelShadowRoot;
 }
+
 function destroyPanel() {
-    const host = document.getElementById(IDS.PANEL_HOST);
-    if (host)
-        host.remove();
+    try {
+        if (panelHostElement) {
+            panelHostElement.remove();
+        }
+    }
+    catch (_) { }
+    panelHostElement = null;
+    panelShadowRoot = null;
+    currentSearchQuery = '';
+    searchInputEl = null;
+    try {
+        if (panelKeydownHandler)
+            document.removeEventListener('keydown', panelKeydownHandler);
+    }
+    catch (_) { }
+    panelKeydownHandler = null;
 }
+
+function createChromeCard(colors) {
+    const card = document.createElement('div');
+    card.className = 'ia-chrome-card';
+    card.style.background = colors.cardBg;
+    card.style.border = `1px solid ${colors.cardBorder}`;
+    card.style.borderRadius = '12px';
+    card.style.padding = '12px';
+    card.style.boxShadow = colors.cardShadow;
+    card.style.display = 'flex';
+    card.style.flexDirection = 'column';
+    card.style.gap = '8px';
+    card.style.fontFamily = PANEL_FONT;
+    return card;
+}
+
 function renderMindMap(map) {
     const shadow = ensurePanelHost();
+    if (!shadow)
+        return;
     const content = shadow.getElementById(IDS.PANEL_CONTENT);
     if (!content)
         return;
-    // keep two sections: map area and saved items area
-    content.innerHTML = '';
-    const mapSection = document.createElement('div');
-    mapSection.id = 'ia-map-section';
-    if (!map) {
-        // no map: intentionally render nothing to keep the panel compact
-    }
-    else {
-        const h = document.createElement('h3');
-        h.textContent = map.titulo_central || 'Tema';
-        mapSection.appendChild(h);
-        if (Array.isArray(map.conceptos_clave) && map.conceptos_clave.length) {
-            const s = document.createElement('strong');
-            s.textContent = 'Conceptos clave';
-            mapSection.appendChild(s);
-            const ul = document.createElement('ul');
-            map.conceptos_clave.forEach(c => { const li = document.createElement('li'); li.textContent = c; ul.appendChild(li); });
-            mapSection.appendChild(ul);
+    // Base theme colors
+    const colors = getChromeThemeColors();
+    // Try to fetch the browser active-window color from background; fallback to accent
+    getBrowserAccentColor(400).then((browserColor) => {
+        const useColors = { ...colors };
+        if (browserColor) {
+            useColors.accent = browserColor;
         }
-        if (map.resumen_ejecutivo) {
-            const st = document.createElement('strong');
-            st.textContent = 'Resumen ejecutivo';
-            mapSection.appendChild(st);
-            const p = document.createElement('p');
-            p.textContent = map.resumen_ejecutivo;
-            mapSection.appendChild(p);
+        applyPanelHostFrame(useColors);
+        applyPanelChromeStyles(shadow, useColors);
+        // continue render
+        content.innerHTML = '';
+        const layout = document.createElement('div');
+        layout.style.display = 'flex';
+        layout.style.flexDirection = 'column';
+        layout.style.gap = '12px';
+        layout.style.padding = '12px';
+        layout.style.flex = '1';
+        layout.style.background = useColors.panelBg;
+        const searchCard = createChromeCard(useColors);
+        searchCard.id = 'ia-search-card';
+        const searchLabel = document.createElement('label');
+        searchLabel.textContent = 'Buscar conversaciones';
+        searchLabel.style.fontSize = '12px';
+        searchLabel.style.color = useColors.textSecondary;
+        searchLabel.style.fontWeight = '500';
+        searchCard.appendChild(searchLabel);
+        const searchInput = document.createElement('input');
+        searchInput.type = 'search';
+        searchInput.placeholder = 'Buscar por título o contenido';
+        searchInput.value = currentSearchQuery;
+        Object.assign(searchInput.style, {
+            width: '100%',
+            padding: '8px 12px',
+            borderRadius: '8px',
+            border: `1px solid ${useColors.inputBorder}`,
+            background: useColors.inputBg,
+            color: useColors.inputText,
+            fontFamily: PANEL_FONT,
+            fontSize: '14px'
+        });
+        searchInput.addEventListener('keydown', ev => ev.stopPropagation());
+        searchInput.addEventListener('input', () => {
+            currentSearchQuery = searchInput.value || '';
+            renderSavedItems(currentSavedItems);
+        });
+        searchCard.appendChild(searchInput);
+        searchInputEl = searchInput;
+        layout.appendChild(searchCard);
+        if (map) {
+            const mapCard = createChromeCard(useColors);
+            mapCard.id = 'ia-map-card';
+            const heading = document.createElement('div');
+            heading.textContent = map.titulo_central || 'Mapa conceptual';
+            heading.style.fontWeight = '600';
+            heading.style.fontSize = '15px';
+            heading.style.color = useColors.textPrimary;
+            mapCard.appendChild(heading);
+            if (Array.isArray(map.conceptos_clave) && map.conceptos_clave.length) {
+                const sub = document.createElement('div');
+                sub.textContent = 'Conceptos clave';
+                sub.style.fontSize = '12px';
+                sub.style.color = useColors.textSecondary;
+                sub.style.fontWeight = '500';
+                mapCard.appendChild(sub);
+                const list = document.createElement('ul');
+                list.style.margin = '0';
+                list.style.paddingLeft = '18px';
+                list.style.color = useColors.textPrimary;
+                list.style.fontSize = '13px';
+                map.conceptos_clave.forEach(c => {
+                    const li = document.createElement('li');
+                    li.textContent = c;
+                    li.style.marginBottom = '2px';
+                    list.appendChild(li);
+                });
+                mapCard.appendChild(list);
+            }
+            if (map.resumen_ejecutivo) {
+                const resumeLabel = document.createElement('div');
+                resumeLabel.textContent = 'Resumen ejecutivo';
+                resumeLabel.style.fontSize = '12px';
+                resumeLabel.style.color = useColors.textSecondary;
+                resumeLabel.style.fontWeight = '500';
+                resumeLabel.style.marginTop = '6px';
+                mapCard.appendChild(resumeLabel);
+                const resume = document.createElement('p');
+                resume.textContent = map.resumen_ejecutivo;
+                resume.style.margin = '4px 0 0';
+                resume.style.fontSize = '13px';
+                resume.style.color = useColors.textPrimary;
+                resume.style.lineHeight = '1.5';
+                mapCard.appendChild(resume);
+            }
+            layout.appendChild(mapCard);
         }
-    }
-    const divider = document.createElement('hr');
-    divider.style.margin = '12px 0';
-    const savedSection = document.createElement('div');
-    savedSection.id = 'ia-saved-section';
-    const savedTitle = document.createElement('h4');
-    savedTitle.textContent = 'Conversaciones guardadas';
-    savedSection.appendChild(savedTitle);
-    const savedList = document.createElement('div');
-    savedList.id = 'ia-saved-list';
-    savedList.style.display = 'flex';
-    savedList.style.flexDirection = 'column';
-    savedList.style.gap = '8px';
-    savedSection.appendChild(savedList);
-    content.appendChild(mapSection);
-    content.appendChild(divider);
-    content.appendChild(savedSection);
-    // load saved items for this page and render them
-    loadSavedItemsForPage();
+        const savedCard = createChromeCard(useColors);
+        savedCard.id = 'ia-saved-card';
+        const savedTitle = document.createElement('div');
+        savedTitle.textContent = 'Conversaciones guardadas';
+        savedTitle.style.fontWeight = '600';
+        savedTitle.style.fontSize = '15px';
+        savedTitle.style.color = useColors.textPrimary;
+        savedCard.appendChild(savedTitle);
+        const savedList = document.createElement('div');
+        savedList.id = 'ia-saved-list';
+        savedList.style.display = 'flex';
+        savedList.style.flexDirection = 'column';
+        savedList.style.gap = '8px';
+        savedCard.appendChild(savedList);
+        layout.appendChild(savedCard);
+        content.appendChild(layout);
+        loadSavedItemsForPage();
+    }).catch(() => {
+        // fallback synchronous render if promise rejects
+        applyPanelHostFrame(colors);
+        applyPanelChromeStyles(shadow, colors);
+        content.innerHTML = '';
+        const layout = document.createElement('div');
+        layout.style.display = 'flex';
+        layout.style.flexDirection = 'column';
+        layout.style.gap = '12px';
+        layout.style.padding = '12px';
+        layout.style.flex = '1';
+        layout.style.background = colors.panelBg;
+        content.appendChild(layout);
+        loadSavedItemsForPage();
+    });
+    // original synchronous render moved inside promise resolution above
 }
+
+function renderSavedItems(items) {
+    const shadow = ensurePanelHost();
+    if (!shadow)
+        return;
+    const container = shadow.getElementById('ia-saved-list');
+    if (!container)
+        return;
+    const colors = getChromeThemeColors();
+    container.innerHTML = '';
+    const sorted = Array.isArray(items) ? [...items] : [];
+    sorted.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || '')).reverse();
+    const normalizedQuery = normalizeForSearch(currentSearchQuery || '');
+    const filtered = normalizedQuery
+        ? sorted.filter((it) => {
+            const haystack = normalizeForSearch([it.title, it.original_text, it.summary].filter(Boolean).join(' '));
+            return haystack.includes(normalizedQuery);
+        })
+        : sorted;
+    if (!filtered.length) {
+        const empty = document.createElement('div');
+        empty.textContent = sorted.length ? `No hay resultados para "${currentSearchQuery}".` : 'No hay elementos guardados en esta página.';
+        empty.style.color = colors.textSecondary;
+        empty.style.padding = '12px';
+        empty.style.borderRadius = '8px';
+        empty.style.background = colors.cardBg;
+        empty.style.border = `1px solid ${colors.cardBorder}`;
+        container.appendChild(empty);
+        return;
+    }
+    for (const it of filtered) {
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.flexDirection = 'column';
+        row.style.gap = '6px';
+        row.style.padding = '10px 12px';
+        row.style.borderRadius = '10px';
+        row.style.background = colors.isDark ? '#303134' : '#f8f9fa';
+        row.style.transition = 'background-color 0.2s ease';
+        row.style.fontFamily = PANEL_FONT;
+        row.style.color = colors.textPrimary;
+        row.addEventListener('mouseenter', () => {
+            row.style.background = colors.isDark ? '#3c4043' : '#eef1f5';
+        });
+        row.addEventListener('mouseleave', () => {
+            row.style.background = colors.isDark ? '#303134' : '#f8f9fa';
+        });
+        const title = document.createElement('div');
+        title.textContent = it.title || (it.original_text || '').slice(0, 80) || 'Fragmento guardado';
+        title.style.fontWeight = '600';
+        title.style.fontSize = '14px';
+        title.style.color = colors.textPrimary;
+        const messageLine = document.createElement('div');
+        messageLine.textContent = it.original_text || it.summary || 'No se encontró el texto original.';
+        messageLine.style.marginTop = '4px';
+        messageLine.style.marginBottom = '8px';
+        messageLine.style.padding = '10px 12px';
+        messageLine.style.borderRadius = '8px';
+        messageLine.style.background = colors.messageBg;
+        messageLine.style.color = colors.textPrimary;
+        messageLine.style.border = `1px solid ${colors.cardBorder}`;
+        messageLine.style.whiteSpace = 'pre-wrap';
+        const actions = document.createElement('div');
+        actions.style.display = 'flex';
+        actions.style.flexWrap = 'wrap';
+        actions.style.gap = '8px';
+        const viewBtn = document.createElement('button');
+        viewBtn.textContent = 'Ver texto';
+        Object.assign(viewBtn.style, {
+            cursor: 'pointer',
+            padding: '6px 12px',
+            borderRadius: '20px',
+            border: 'none',
+            background: colors.accent,
+            color: colors.accentText,
+            fontWeight: '600',
+            fontFamily: PANEL_FONT
+        });
+        viewBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            if (messageLine.parentNode === row) {
+                row.removeChild(messageLine);
+                viewBtn.textContent = 'Ver texto';
+            }
+            else {
+                row.insertBefore(messageLine, actions);
+                messageLine.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                viewBtn.textContent = 'Ocultar texto';
+            }
+        });
+        actions.appendChild(viewBtn);
+        const navBtn = document.createElement('button');
+        navBtn.textContent = 'Ir al mensaje';
+        Object.assign(navBtn.style, {
+            cursor: 'pointer',
+            padding: '6px 12px',
+            borderRadius: '20px',
+            border: `1px solid ${colors.accent}`,
+            background: 'transparent',
+            color: colors.accent,
+            fontWeight: '600',
+            fontFamily: PANEL_FONT
+        });
+        navBtn.addEventListener('mouseenter', () => {
+            navBtn.style.background = colors.isDark ? '#1f3b63' : '#e8f0fe';
+        });
+        navBtn.addEventListener('mouseleave', () => {
+            navBtn.style.background = 'transparent';
+        });
+        navBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const sid = it.source_id;
+            try {
+                ensureMarkersForItems([it]);
+            }
+            catch (_) { }
+            navBtn.disabled = true;
+            navBtn.textContent = 'Buscando...';
+            const snippetText = it.original_text || it.summary || it.title || '';
+            scrollToSource(sid, snippetText).then(ok => {
+                if (!ok) {
+                    safeSendMessage({ type: 'NAVIGATE_TO_SOURCE', payload: { pageUrl: it.pageUrl || location.href, sourceId: sid } }, (r) => {
+                        if (r && r.ok) {
+                            navBtn.textContent = r.openedNewTab ? 'Abriendo...' : 'Ir al mensaje';
+                            setTimeout(() => {
+                                navBtn.textContent = 'Ir al mensaje';
+                                navBtn.disabled = false;
+                            }, 1200);
+                        }
+                        else {
+                            navBtn.textContent = 'No encontrado';
+                            setTimeout(() => {
+                                navBtn.textContent = 'Ir al mensaje';
+                                navBtn.disabled = false;
+                            }, 1500);
+                        }
+                    });
+                }
+                else {
+                    setTimeout(() => {
+                        navBtn.textContent = 'Ir al mensaje';
+                        navBtn.disabled = false;
+                    }, 500);
+                }
+            }).catch(() => {
+                navBtn.textContent = 'No encontrado';
+                setTimeout(() => {
+                    navBtn.textContent = 'Ir al mensaje';
+                    navBtn.disabled = false;
+                }, 1500);
+            });
+        });
+        actions.appendChild(navBtn);
+        const delBtn = document.createElement('button');
+        delBtn.textContent = 'Eliminar';
+        Object.assign(delBtn.style, {
+            cursor: 'pointer',
+            padding: '6px 12px',
+            borderRadius: '20px',
+            border: `1px solid ${colors.cardBorder}`,
+            background: 'transparent',
+            color: colors.textSecondary,
+            fontWeight: '500',
+            fontFamily: PANEL_FONT
+        });
+        delBtn.addEventListener('mouseenter', () => {
+            delBtn.style.background = colors.isDark ? '#3c4043' : '#f1f3f4';
+        });
+        delBtn.addEventListener('mouseleave', () => {
+            delBtn.style.background = 'transparent';
+        });
+        delBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            try {
+                safeSendMessage({ type: 'DELETE_SAVED_ITEM', payload: { sourceId: it.source_id } }, (r) => {
+                    if (r && r.ok) {
+                        loadSavedItemsForPage();
+                        loadMindMapForPage();
+                    }
+                });
+            }
+            catch (_) { }
+        });
+        actions.appendChild(delBtn);
+        row.appendChild(title);
+        row.appendChild(actions);
+        container.appendChild(row);
+    }
+}
+
 function loadMindMapForPage() {
     const storage = globalThis.chrome?.storage?.local;
     if (!storage || typeof storage.get !== 'function') {
@@ -305,150 +765,6 @@ function loadSavedItemsForPage() {
         }
         catch (_) { /* ignore */ }
     });
-}
-function renderSavedItems(items) {
-    // Use ensurePanelHost() to obtain the ShadowRoot reference (we attach with closed mode)
-    const shadow = ensurePanelHost();
-    const container = shadow.getElementById('ia-saved-list');
-    if (!container)
-        return;
-    container.innerHTML = '';
-    if (!items || !items.length) {
-        const p = document.createElement('div');
-        p.textContent = 'No hay elementos guardados en esta página.';
-        p.style.color = '#666';
-        container.appendChild(p);
-        return;
-    }
-    items.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || '')).reverse();
-    for (const it of items) {
-        const row = document.createElement('div');
-        row.style.border = '1px solid #eee';
-        row.style.padding = '8px';
-        row.style.borderRadius = '6px';
-        row.style.background = '#fafafa';
-    // Apply nicer font and spacing for saved-item cards
-    row.style.fontFamily = "Inter, 'Segoe UI', Roboto, system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif";
-    row.style.fontSize = '13px';
-    row.style.color = '#0f172a';
-        const title = document.createElement('div');
-        title.textContent = it.title || (it.original_text || '').slice(0, 80);
-        title.style.fontWeight = '600';
-        title.style.marginBottom = '6px';
-    title.style.fontFamily = row.style.fontFamily;
-        // For space savings: do not render any summary under the title.
-        // The full saved text will be revealed only when the user clicks "Ver texto".
-    // Create the full text element but don't append it to the card yet.
-    // It will be inserted only when the user clicks "Ver texto".
-    const messageLine = document.createElement('div');
-    messageLine.textContent = it.original_text || it.summary || 'No se encontró el texto original.';
-    messageLine.style.marginBottom = '8px';
-    messageLine.style.padding = '8px';
-    messageLine.style.borderRadius = '4px';
-    messageLine.style.background = '#eef2ff';
-    messageLine.style.whiteSpace = 'pre-wrap';
-        const actions = document.createElement('div');
-        actions.style.display = 'flex';
-        actions.style.gap = '8px';
-    const viewBtn = document.createElement('button');
-    viewBtn.textContent = 'Ver texto';
-        viewBtn.style.cursor = 'pointer';
-        viewBtn.style.padding = '6px 8px';
-        viewBtn.style.border = 'none';
-        viewBtn.style.background = '#2563eb';
-        viewBtn.style.color = '#fff';
-        viewBtn.style.borderRadius = '4px';
-        viewBtn.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            // If messageLine is attached, remove it; otherwise insert it before the actions node.
-            if (messageLine.parentNode === row) {
-                row.removeChild(messageLine);
-                viewBtn.textContent = 'Ver texto';
-            }
-            else {
-                // insert message before the actions container
-                row.insertBefore(messageLine, actions);
-                // ensure it's visible
-                messageLine.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                viewBtn.textContent = 'Ocultar texto';
-            }
-        });
-        actions.appendChild(viewBtn);
-        const navBtn = document.createElement('button');
-        navBtn.textContent = 'Ir al mensaje';
-        navBtn.style.cursor = 'pointer';
-        navBtn.style.padding = '6px 8px';
-        navBtn.style.border = 'none';
-        navBtn.style.background = '#5fc723ff';
-        navBtn.style.color = '#fff';
-        navBtn.style.borderRadius = '4px';
-        navBtn.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            const sid = it.source_id;
-            try {
-                ensureMarkersForItems([it]);
-            }
-            catch (_) { }
-            navBtn.disabled = true;
-            navBtn.textContent = 'Buscando...';
-            const snippetText = it.original_text || it.summary || it.title || '';
-            scrollToSource(sid, snippetText).then(ok => {
-                if (!ok) {
-                    safeSendMessage({ type: 'NAVIGATE_TO_SOURCE', payload: { pageUrl: it.pageUrl || location.href, sourceId: sid } }, (r) => {
-                        if (r && r.ok) {
-                            navBtn.textContent = r.openedNewTab ? 'Abriendo...' : 'Ir al mensaje';
-                            setTimeout(() => {
-                                navBtn.textContent = 'Ir al mensaje';
-                                navBtn.disabled = false;
-                            }, 1200);
-                        }
-                        else {
-                            navBtn.textContent = 'No encontrado';
-                            setTimeout(() => {
-                                navBtn.textContent = 'Ir al mensaje';
-                                navBtn.disabled = false;
-                            }, 1500);
-                        }
-                    });
-                }
-                else {
-                    setTimeout(() => {
-                        navBtn.textContent = 'Ir al mensaje';
-                        navBtn.disabled = false;
-                    }, 500);
-                }
-            }).catch(() => {
-                navBtn.textContent = 'No encontrado';
-                setTimeout(() => {
-                    navBtn.textContent = 'Ir al mensaje';
-                    navBtn.disabled = false;
-                }, 1500);
-            });
-        });
-        actions.appendChild(navBtn);
-        const delBtn = document.createElement('button');
-        delBtn.textContent = 'Eliminar';
-        delBtn.style.cursor = 'pointer';
-        delBtn.style.padding = '6px 8px';
-        delBtn.style.border = '1px solid #ddd';
-        delBtn.style.background = '#fff';
-        delBtn.style.borderRadius = '4px';
-        delBtn.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            try {
-                safeSendMessage({ type: 'DELETE_SAVED_ITEM', payload: { sourceId: it.source_id } }, (r) => { if (r && r.ok) {
-                    loadSavedItemsForPage();
-                    loadMindMapForPage();
-                } });
-            }
-            catch (_) { }
-        });
-    actions.appendChild(delBtn);
-    row.appendChild(title);
-    // summary intentionally omitted to save space; full text appears only via "Ver texto"
-    row.appendChild(actions);
-        container.appendChild(row);
-    }
 }
 // Listen to storage changes so panel updates when new items are saved elsewhere
 try {
@@ -578,10 +894,86 @@ function findSnippetRange(root, snippetText) {
     return range;
 }
 
+// More robust finder: if the full snippet is not found, try progressively shorter
+// substring matches (sliding windows) and return the best (longest) match found.
+function findSnippetRangeWithFallback(root, snippetText) {
+    const normalizedSnippet = normalizeForSearch(snippetText);
+    if (!normalizedSnippet)
+        return { range: null, matched: null };
+    const { normalized, mapping } = buildNormalizedMap(root);
+    if (!normalized)
+        return { range: null, matched: null };
+    const makeRange = (startIndex, length) => {
+        const startMap = mapping[startIndex];
+        const endMap = mapping[startIndex + length - 1];
+        if (!startMap || !endMap)
+            return null;
+        try {
+            const range = document.createRange();
+            range.setStart(startMap.node, startMap.offset);
+            const endNode = endMap.node;
+            const endText = endNode.nodeValue || '';
+            const endOffset = Math.min(endText.length, endMap.offset + 1);
+            range.setEnd(endNode, endOffset);
+            return range;
+        }
+        catch (_) {
+            return null;
+        }
+    };
+
+    // Exact match first
+    let idx = normalized.indexOf(normalizedSnippet);
+    if (idx !== -1) {
+        const r = makeRange(idx, normalizedSnippet.length);
+        if (r)
+            return { range: r, matched: normalizedSnippet };
+    }
+
+    // Try progressively shorter windows (prefer longer matches)
+    const windowLens = [240, 200, 160, 120, 80, 40, 20];
+    for (const len of windowLens) {
+        if (normalizedSnippet.length <= len)
+            continue;
+        const step = Math.max(1, Math.floor(len / 4));
+        for (let start = 0; start + len <= normalizedSnippet.length; start += step) {
+            const sub = normalizedSnippet.slice(start, start + len);
+            const pos = normalized.indexOf(sub);
+            if (pos !== -1) {
+                const r = makeRange(pos, sub.length);
+                if (r)
+                    return { range: r, matched: sub };
+            }
+        }
+    }
+
+    // Try shorter contiguous word groups
+    const words = normalizedSnippet.split(' ').filter(Boolean);
+    for (let wlen = Math.min(words.length, 8); wlen >= 1; wlen--) {
+        for (let i = 0; i + wlen <= words.length; i++) {
+            const sub = words.slice(i, i + wlen).join(' ');
+            const pos = normalized.indexOf(sub);
+            if (pos !== -1) {
+                const r = makeRange(pos, sub.length);
+                if (r)
+                    return { range: r, matched: sub };
+            }
+        }
+    }
+
+    return { range: null, matched: null };
+}
+
 function applySnippetHighlight(el, snippetText) {
-    const range = findSnippetRange(el, snippetText);
+    const { range, matched } = findSnippetRangeWithFallback(el, snippetText);
     if (!range)
         return null;
+    if (matched && normalizeForSearch(snippetText).length !== matched.length) {
+        try {
+            console.debug('[IA] applySnippetHighlight: used fallback fragment', { originalLength: normalizeForSearch(snippetText).length, matchedLength: matched.length });
+        }
+        catch (_) { }
+    }
     const span = document.createElement('span');
     span.className = 'ia-highlight-match';
     try {
@@ -625,6 +1017,28 @@ function highlightElement(el, snippetText) {
             return true;
         }
     }
+    // If direct highlight failed, try the enclosing message container (more likely to contain text nodes)
+    try {
+        const container = (el instanceof HTMLElement && typeof el.closest === 'function') ? el.closest(MESSAGE_CONTAINER_SELECTOR) : null;
+        if (container && container instanceof HTMLElement) {
+            const containerResult = applySnippetHighlight(container, snippetText);
+            if (containerResult) {
+                currentHighlightCleanup = containerResult.cleanup;
+                setTimeout(() => {
+                    if (currentHighlightCleanup === containerResult.cleanup) {
+                        try {
+                            currentHighlightCleanup();
+                        }
+                        catch (_) { }
+                        currentHighlightCleanup = null;
+                    }
+                }, 4000);
+                return true;
+            }
+        }
+    }
+    catch (_) { }
+
     const target = getHighlightTarget(el);
     if (!target)
         return false;

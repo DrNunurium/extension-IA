@@ -94,6 +94,198 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
             })();
             return true;
         }
+        case 'GET_CHROME_ACTIVE_COLOR': {
+            // Try to return stored preference first. If absent, attempt to derive
+            // a color from the active tab's <meta name="theme-color">. This is
+            // best-effort and may return null.
+            try {
+                chromeApi.storage.local.get(['panelAccentColor'], (data) => {
+                    try {
+                        const stored = data && data.panelAccentColor ? String(data.panelAccentColor) : null;
+                        if (stored) {
+                            sendResponse({ color: stored });
+                            return;
+                        }
+                        // No stored color; try to query active tab for theme-color
+                        try {
+                            chromeApi.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+                                const tab = (tabs && tabs.length) ? tabs[0] : null;
+                                if (!tab || typeof tab.id !== 'number') {
+                                    sendResponse({ color: null });
+                                    return;
+                                }
+                                // Execute a small function in the page to read meta[name=theme-color]
+                                try {
+                                    chromeApi.scripting.executeScript({
+                                        target: { tabId: tab.id },
+                                        func: () => {
+                                            try {
+                                                const m = document.querySelector('meta[name="theme-color"]');
+                                                if (m && m.getAttribute)
+                                                    return m.getAttribute('content') || null;
+                                            }
+                                            catch (e) { }
+                                            return null;
+                                        }
+                                    }, (results) => {
+                                        try {
+                                            const color = (Array.isArray(results) && results[0] && results[0].result) ? results[0].result : null;
+                                            sendResponse({ color });
+                                        }
+                                        catch (e) {
+                                            sendResponse({ color: null });
+                                        }
+                                    });
+                                }
+                                catch (e) {
+                                    sendResponse({ color: null });
+                                }
+                            });
+                        }
+                        catch (e) {
+                            sendResponse({ color: null });
+                        }
+                    }
+                    catch (e) {
+                        sendResponse({ color: null });
+                    }
+                });
+            }
+            catch (e) {
+                try {
+                    sendResponse({ color: null });
+                }
+                catch (_) { }
+            }
+            return true;
+        }
+        case 'INJECT_MATH_SANITIZER': {
+            // Run a function in the page context (via scripting.executeScript) that
+            // patches katex.render and MathJax entrypoints to sanitize inputs before
+            // rendering. Use sender.tab.id to target the correct tab.
+            try {
+                const tabId = sender?.tab?.id;
+                if (typeof tabId !== 'number') {
+                    sendResponse({ ok: false, error: 'no_tab' });
+                    return true;
+                }
+                chromeApi.scripting.executeScript({
+                    target: { tabId },
+                    func: () => {
+                        try {
+                            const bs = String.fromCharCode(92);
+                            const w = window;
+                            // To avoid TypeScript window typings when this function is serialized,
+                            // treat the page window as any at runtime.
+                            const pw = window;
+                            function sanitizeTex(s) {
+                                if (typeof s !== 'string')
+                                    return s;
+                                try {
+                                    let out = String(s);
+                                    const chars = ['€', '£', '¥', '•', '–', '—', '…', '←', '→', '↑', '↓'];
+                                    for (const ch of chars) {
+                                        out = out.split(ch).join(bs + 'text{' + ch + '}');
+                                    }
+                                    // Wrap runs of non-ASCII while avoiding backslash sequences
+                                    out = out.replace(/([^\\]|^)([\u0080-\uFFFF]+)/g, function (_, lead, run) {
+                                        return lead + bs + 'text{' + run + '}';
+                                    });
+                                    return out;
+                                }
+                                catch (e) {
+                                    return s;
+                                }
+                            }
+                            function patchKatex() {
+                                try {
+                                    if (pw.katex && typeof pw.katex.render === 'function') {
+                                        const orig = pw.katex.render;
+                                        pw.katex.render = function (tex, el, opts) {
+                                            try {
+                                                const safe = sanitizeTex(tex);
+                                                const merged = Object.assign({ throwOnError: false, strict: 'ignore' }, opts || {});
+                                                return orig.call(this, safe, el, merged);
+                                            }
+                                            catch (e) {
+                                                try {
+                                                    return orig.call(this, tex, el, opts);
+                                                }
+                                                catch (__) {
+                                                    return null;
+                                                }
+                                            }
+                                        };
+                                    }
+                                }
+                                catch (e) { }
+                            }
+                            function patchMathJax() {
+                                try {
+                                    if (pw.MathJax) {
+                                        if (typeof pw.MathJax.typesetPromise === 'function') {
+                                            const orig = pw.MathJax.typesetPromise;
+                                            pw.MathJax.typesetPromise = function (elements) {
+                                                try {
+                                                    const scripts = document.querySelectorAll('script[type^="math/tex"]');
+                                                    scripts.forEach(s => { if (s.textContent)
+                                                        s.textContent = sanitizeTex(s.textContent); });
+                                                }
+                                                catch (e) { }
+                                                return orig.call(this, elements);
+                                            };
+                                        }
+                                        if (pw.MathJax.Hub && pw.MathJax.Hub.Queue) {
+                                            const origQ = pw.MathJax.Hub.Queue;
+                                            pw.MathJax.Hub.Queue = function () {
+                                                try {
+                                                    const scripts = document.querySelectorAll('script[type^="math/tex"]');
+                                                    scripts.forEach(s => { if (s.textContent)
+                                                        s.textContent = sanitizeTex(s.textContent); });
+                                                }
+                                                catch (e) { }
+                                                return origQ.apply(this, arguments);
+                                            };
+                                        }
+                                    }
+                                }
+                                catch (e) { }
+                            }
+                            patchKatex();
+                            patchMathJax();
+                            const iv = setInterval(() => { try {
+                                patchKatex();
+                                patchMathJax();
+                            }
+                            catch (e) { } }, 1000);
+                            setTimeout(() => clearInterval(iv), 30000);
+                        }
+                        catch (e) { /* ignore */ }
+                    }
+                }, (results) => {
+                    try {
+                        // If executeScript failed, results may be undefined
+                        if (!results)
+                            sendResponse({ ok: false, error: 'exec_failed' });
+                        else
+                            sendResponse({ ok: true });
+                    }
+                    catch (e) {
+                        try {
+                            sendResponse({ ok: false, error: String(e) });
+                        }
+                        catch (_) { }
+                    }
+                });
+            }
+            catch (e) {
+                try {
+                    sendResponse({ ok: false, error: String(e) });
+                }
+                catch (_) { }
+            }
+            return true;
+        }
         case 'NAVIGATE_TO_SOURCE': {
             const { pageUrl, sourceId } = message.payload || {};
             if (!pageUrl || !sourceId)
