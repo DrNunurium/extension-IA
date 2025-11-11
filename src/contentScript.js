@@ -228,6 +228,7 @@ function ensurePanelHost() {
     }
     if (!document.body)
         return null;
+    const hostColors = getChromeThemeColors();
     if (!panelHostElement || !panelHostElement.isConnected) {
         const existingHost = document.getElementById(IDS.PANEL_HOST);
         if (existingHost) {
@@ -273,9 +274,40 @@ function ensurePanelHost() {
     content.style.display = 'flex';
     content.style.flexDirection = 'column';
     content.style.height = '100%';
+    // leave room at the top for the Buy Me a Coffee button so it doesn't
+    // overlap the search card
+    content.style.paddingTop = '56px';
     panelShadowRoot.appendChild(content);
     // add close button in the top-right corner of the panel
     try {
+        // add 'Buy me a coffee' button in the top-left corner
+        const buy = document.createElement('button');
+        buy.id = 'ia-panel-buyme';
+        buy.type = 'button';
+        buy.textContent = 'Buy me a coffee ☕';
+        Object.assign(buy.style, {
+            position: 'absolute',
+            top: '8px',
+            left: '12px',
+            height: '34px',
+            padding: '6px 10px',
+            borderRadius: '8px',
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: '13px',
+            background: '#FFD54F',
+            color: '#000000',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
+        });
+        buy.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            // Replace the URL below with your BuyMeACoffee page
+            try {
+                window.open('https://www.buymeacoffee.com/yourname', '_blank');
+            }
+            catch (e) { /* ignore */ }
+        });
+        panelShadowRoot.appendChild(buy);
         const btn = document.createElement('button');
         btn.id = 'ia-panel-close';
         btn.type = 'button';
@@ -289,7 +321,7 @@ function ensurePanelHost() {
             borderRadius: '8px',
             border: 'none',
             background: 'transparent',
-            color: getChromeThemeColors().textSecondary,
+            color: hostColors.textSecondary,
             cursor: 'pointer',
             fontSize: '16px',
             lineHeight: '1',

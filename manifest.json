@@ -18,9 +18,9 @@
     "type": "module"
   },
   "icons": {
-    "16": "src/icons/logoextension.png",
-    "48": "src/icons/logoextension.png",
-    "128": "src/icons/logoextension.png"
+    "16": "src/icons/logoextension1.png",
+    "48": "src/icons/logoextension1.png",
+    "128": "src/icons/logoextension1.png"
   },
   "content_scripts": [
     {
@@ -38,9 +38,9 @@
     "default_title": "AI Chat Knowledge Organizer",
     "default_popup": "src/popup.html",
     "default_icon": {
-      "16": "src/icons/logoextension.png",
-      "48": "src/icons/logoextension.png",
-      "128": "src/icons/logoextension.png"
+      "16": "src/icons/logoextension1.png",
+      "48": "src/icons/logoextension1.png",
+      "128": "src/icons/logoextension1.png"
     }
   },
   "options_ui": {
