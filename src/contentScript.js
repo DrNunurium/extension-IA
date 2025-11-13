@@ -278,6 +278,7 @@ function ensurePanelHost() {
     // overlap the search card
     content.style.paddingTop = '56px';
     panelShadowRoot.appendChild(content);
+    
     // add close button in the top-right corner of the panel
     try {
         // add 'Buy me a coffee' button in the top-left corner
