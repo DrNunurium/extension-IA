@@ -1,13 +1,23 @@
 // Open the sidebar.html in a new tab. This is a fallback for when the browser side panel isn't available.
 
 document.addEventListener('DOMContentLoaded', () => {
+  // i18n helper
+  function __(key: string, fallback?: string) {
+    try {
+      if ((window as any).chrome && (chrome as any).i18n && typeof (chrome as any).i18n.getMessage === 'function') {
+        const m = (chrome as any).i18n.getMessage(key);
+        if (m) return m;
+      }
+    } catch (e) { }
+    return fallback || '';
+  }
   const btn = document.getElementById('open') as HTMLButtonElement | null;
 
   if (!btn) return;
   btn.addEventListener('click', async () => {
     const statusDiv = document.getElementById('status') as HTMLElement | null;
     const actionsDiv = document.getElementById('actions') as HTMLElement | null;
-    if (statusDiv) statusDiv.textContent = 'Intentando abrir panel en esta pestaña...';
+    if (statusDiv) statusDiv.textContent = __('trying_opening', 'Intentando abrir panel en esta pestaña...');
     try {
       // request the active tab to toggle the in-page side panel
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -23,10 +33,10 @@ document.addEventListener('DOMContentLoaded', () => {
               try {
                 chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['src/contentScript.js'] }, () => {
                   const execErr = chrome.runtime.lastError;
-                  if (execErr) {
+                    if (execErr) {
                     console.debug('Failed to inject content script:', execErr.message);
-                    if (statusDiv) statusDiv.textContent = 'No se puede mostrar el panel en esta pestaña.';
-                    if (actionsDiv) actionsDiv.innerHTML = '<button id="closePopup">Cerrar</button>';
+                    if (statusDiv) statusDiv.textContent = __('cannot_show_tab', 'No se puede mostrar el panel en esta pestaña.');
+                    if (actionsDiv) actionsDiv.innerHTML = '<button id="closePopup">' + __('close', 'Cerrar') + '</button>';
                     const closeBtn = document.getElementById('closePopup') as HTMLButtonElement | null;
                     if (closeBtn) closeBtn.addEventListener('click', () => window.close());
                     return;
@@ -40,12 +50,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     const err2 = chrome.runtime.lastError;
                     if (err2) {
                       console.debug('Message failed after injection:', err2.message);
-                      if (statusDiv) statusDiv.textContent = 'No se pudo abrir el panel en esta pestaña.';
+                      if (statusDiv) statusDiv.textContent = __('could_not_open_tab', 'No se pudo abrir el panel en esta pestaña.');
                       return;
                     }
-                    if (statusDiv) statusDiv.textContent = 'Panel abierto en esta pestaña.';
+                    if (statusDiv) statusDiv.textContent = __('panel_opened', 'Panel abierto en esta pestaña.');
                     if (actionsDiv) {
-                      actionsDiv.innerHTML = '<button id="closePopup">Cerrar</button>';
+                      actionsDiv.innerHTML = '<button id="closePopup">' + __('close', 'Cerrar') + '</button>';
                       const closeBtn2 = document.getElementById('closePopup') as HTMLButtonElement | null;
                       if (closeBtn2) closeBtn2.addEventListener('click', () => window.close());
                     }
@@ -54,14 +64,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
               } catch (injectErr) {
                 console.error('Injection attempt failed', injectErr);
-                if (statusDiv) statusDiv.textContent = 'No se puede mostrar el panel en esta pestaña.';
+                if (statusDiv) statusDiv.textContent = __('cannot_show_tab', 'No se puede mostrar el panel en esta pestaña.');
               }
               return;
             }
             // success: panel toggled in-page
-            if (statusDiv) statusDiv.textContent = 'Panel abierto en esta pestaña.';
+            if (statusDiv) statusDiv.textContent = __('panel_opened', 'Panel abierto en esta pestaña.');
             if (actionsDiv) {
-              actionsDiv.innerHTML = '<button id="closePopup">Cerrar</button>';
+              actionsDiv.innerHTML = '<button id="closePopup">' + __('close', 'Cerrar') + '</button>';
               const closeBtn = document.getElementById('closePopup') as HTMLButtonElement | null;
               if (closeBtn) closeBtn.addEventListener('click', () => window.close());
             }
@@ -70,9 +80,9 @@ document.addEventListener('DOMContentLoaded', () => {
           // fallback: open in new tab
           const url = chrome.runtime.getURL('src/sidebar.html');
           chrome.tabs.create({ url }, () => {
-            if (statusDiv) statusDiv.textContent = 'Se abrió el panel en una nueva pestaña.';
+            if (statusDiv) statusDiv.textContent = __('opened_in_new_tab', 'Se abrió el panel en una nueva pestaña.');
             if (actionsDiv) {
-              actionsDiv.innerHTML = '<button id="closePopup">Cerrar</button>';
+              actionsDiv.innerHTML = '<button id="closePopup">' + __('close', 'Cerrar') + '</button>';
               const closeBtn = document.getElementById('closePopup') as HTMLButtonElement | null;
               if (closeBtn) closeBtn.addEventListener('click', () => window.close());
             }
@@ -81,7 +91,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     } catch (e) {
       console.error('Failed to toggle or open sidebar page', e);
-      if (statusDiv) statusDiv.textContent = 'Error al abrir el panel.';
+      if (statusDiv) statusDiv.textContent = __('error_opening', 'Error al abrir el panel.');
     }
   });
 

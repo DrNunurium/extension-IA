@@ -3,6 +3,7 @@
   "name": "AI Chat Knowledge Organizer",
   "version": "0.1.0",
   "description": "Organiza conversaciones de IA capturando mensajes y generando resúmenes estructurados.",
+  "default_locale": "en",
   "permissions": [
     "activeTab",
     "storage",

@@ -10,22 +10,34 @@ const PANEL_FONT = "'Roboto','Noto Sans','Segoe UI',Arial,sans-serif";
 let currentSavedItems = [];
 let currentSearchQuery = '';
 let searchInputEl = null;
-const chromeRuntime = globalThis.chrome?.runtime ?? null;
+    title.textContent = it.title || (it.original_text || '').slice(0, 80) || __('saved_fragment', 'Fragmento guardado');
 const PANEL_STYLE_ID = 'ia-panel-theme';
-let panelHostElement = null;
+    messageLine.textContent = it.original_text || it.summary || __('original_not_found', 'No se encontró el texto original.');
 let panelShadowRoot = null;
 let panelKeydownHandler = null;
-// Phrases to hide and remove from storage/UI (case-insensitive substrings).
+        viewBtn.textContent = __('view_text', 'Ver texto');
 const BANNED_PHRASES = [
     // Keep only highly specific phrases so legitimate snippets are not removed.
     'método para navegación rápida en conversación',
     'método para que el usuario pueda regresar rápidamente a secciones previas de una conversación'
-];
+                viewBtn.textContent = __('view_text', 'Ver texto');
 function isBannedText(text) {
     if (!text)
         return false;
     const low = String(text).toLowerCase();
-    return BANNED_PHRASES.some(p => low.includes(p));
+                viewBtn.textContent = __('hide_text', 'Ocultar texto');
+}
+// Simple i18n helper: uses chrome.i18n when available, otherwise falls back to provided English/Spanish defaults.
+function __(key, fallback) {
+    try {
+        navBtn.textContent = __('go_to_message', 'Ir al mensaje');
+            const m = chrome.i18n.getMessage(key);
+            if (m)
+                return m;
+        }
+    }
+    catch (e) { /* ignore */ }
+    return fallback || '';
 }
 function normalizeUrlString(raw) {
     if (!raw)
@@ -64,7 +76,7 @@ function normalizeForSearch(text) {
     if (!text)
         return '';
     return String(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
-}
+        delBtn.textContent = __('delete', 'Eliminar');
 function getChromeThemeColors() {
     const prefersDark = globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.matches ?? false;
     if (prefersDark) {
@@ -285,7 +297,7 @@ function ensurePanelHost() {
         const buy = document.createElement('button');
         buy.id = 'ia-panel-buyme';
         buy.type = 'button';
-        buy.textContent = 'Buy me a coffee ☕';
+        buy.textContent = __('buy_me_coffee', 'Buy me a coffee ☕');
         Object.assign(buy.style, {
             position: 'absolute',
             top: '8px',
@@ -312,7 +324,7 @@ function ensurePanelHost() {
         const btn = document.createElement('button');
         btn.id = 'ia-panel-close';
         btn.type = 'button';
-        btn.textContent = '✕';
+        btn.textContent = __('close_x', '✕');
         Object.assign(btn.style, {
             position: 'absolute',
             top: '8px',
@@ -404,14 +416,14 @@ function renderMindMap(map) {
         const searchCard = createChromeCard(useColors);
         searchCard.id = 'ia-search-card';
         const searchLabel = document.createElement('label');
-        searchLabel.textContent = 'Buscar conversaciones';
+        searchLabel.textContent = __('search_label', 'Buscar conversaciones');
         searchLabel.style.fontSize = '12px';
         searchLabel.style.color = useColors.textSecondary;
         searchLabel.style.fontWeight = '500';
         searchCard.appendChild(searchLabel);
         const searchInput = document.createElement('input');
         searchInput.type = 'search';
-        searchInput.placeholder = 'Buscar por título o contenido';
+        searchInput.placeholder = __('search_placeholder', 'Buscar por título o contenido');
         searchInput.value = currentSearchQuery;
         Object.assign(searchInput.style, {
             width: '100%',
@@ -435,14 +447,14 @@ function renderMindMap(map) {
             const mapCard = createChromeCard(useColors);
             mapCard.id = 'ia-map-card';
             const heading = document.createElement('div');
-            heading.textContent = map.titulo_central || 'Mapa conceptual';
+            heading.textContent = map.titulo_central || __('map_default_title', 'Mapa conceptual');
             heading.style.fontWeight = '600';
             heading.style.fontSize = '15px';
             heading.style.color = useColors.textPrimary;
             mapCard.appendChild(heading);
             if (Array.isArray(map.conceptos_clave) && map.conceptos_clave.length) {
                 const sub = document.createElement('div');
-                sub.textContent = 'Conceptos clave';
+                sub.textContent = __('key_concepts', 'Conceptos clave');
                 sub.style.fontSize = '12px';
                 sub.style.color = useColors.textSecondary;
                 sub.style.fontWeight = '500';
@@ -462,7 +474,7 @@ function renderMindMap(map) {
             }
             if (map.resumen_ejecutivo) {
                 const resumeLabel = document.createElement('div');
-                resumeLabel.textContent = 'Resumen ejecutivo';
+                resumeLabel.textContent = __('executive_summary', 'Resumen ejecutivo');
                 resumeLabel.style.fontSize = '12px';
                 resumeLabel.style.color = useColors.textSecondary;
                 resumeLabel.style.fontWeight = '500';
@@ -481,7 +493,7 @@ function renderMindMap(map) {
         const savedCard = createChromeCard(useColors);
         savedCard.id = 'ia-saved-card';
         const savedTitle = document.createElement('div');
-        savedTitle.textContent = 'Conversaciones guardadas';
+        savedTitle.textContent = __('saved_conversations', 'Conversaciones guardadas');
         savedTitle.style.fontWeight = '600';
         savedTitle.style.fontSize = '15px';
         savedTitle.style.color = useColors.textPrimary;
@@ -532,7 +544,7 @@ function renderSavedItems(items) {
         : sorted;
     if (!filtered.length) {
         const empty = document.createElement('div');
-        empty.textContent = sorted.length ? `No hay resultados para "${currentSearchQuery}".` : 'No hay elementos guardados en esta página.';
+        empty.textContent = sorted.length ? `${__('no_results', 'No hay resultados para')} "${currentSearchQuery}".` : __('no_items', 'No hay elementos guardados en esta página.');
         empty.style.color = colors.textSecondary;
         empty.style.padding = '12px';
         empty.style.borderRadius = '8px';
@@ -559,12 +571,12 @@ function renderSavedItems(items) {
             row.style.background = colors.isDark ? '#303134' : '#f8f9fa';
         });
         const title = document.createElement('div');
-        title.textContent = it.title || (it.original_text || '').slice(0, 80) || 'Fragmento guardado';
+        title.textContent = it.title || (it.original_text || '').slice(0, 80) || __('saved_fragment', 'Fragmento guardado');
         title.style.fontWeight = '600';
         title.style.fontSize = '14px';
         title.style.color = colors.textPrimary;
         const messageLine = document.createElement('div');
-        messageLine.textContent = it.original_text || it.summary || 'No se encontró el texto original.';
+        messageLine.textContent = it.original_text || it.summary || __('original_not_found', 'No se encontró el texto original.');
         messageLine.style.marginTop = '4px';
         messageLine.style.marginBottom = '8px';
         messageLine.style.padding = '10px 12px';
@@ -578,7 +590,7 @@ function renderSavedItems(items) {
         actions.style.flexWrap = 'wrap';
         actions.style.gap = '8px';
         const viewBtn = document.createElement('button');
-        viewBtn.textContent = 'Ver texto';
+        viewBtn.textContent = __('view_text', 'Ver texto');
         Object.assign(viewBtn.style, {
             cursor: 'pointer',
             padding: '6px 12px',
@@ -593,17 +605,17 @@ function renderSavedItems(items) {
             ev.stopPropagation();
             if (messageLine.parentNode === row) {
                 row.removeChild(messageLine);
-                viewBtn.textContent = 'Ver texto';
+                viewBtn.textContent = __('view_text', 'Ver texto');
             }
             else {
                 row.insertBefore(messageLine, actions);
                 messageLine.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                viewBtn.textContent = 'Ocultar texto';
+                viewBtn.textContent = __('hide_text', 'Ocultar texto');
             }
         });
         actions.appendChild(viewBtn);
         const navBtn = document.createElement('button');
-        navBtn.textContent = 'Ir al mensaje';
+        navBtn.textContent = __('go_to_message', 'Ir al mensaje');
         Object.assign(navBtn.style, {
             cursor: 'pointer',
             padding: '6px 12px',
@@ -628,22 +640,22 @@ function renderSavedItems(items) {
             }
             catch (_) { }
             navBtn.disabled = true;
-            navBtn.textContent = 'Buscando...';
+                    navBtn.textContent = __('searching', 'Buscando...');
             const snippetText = it.original_text || it.summary || it.title || '';
             scrollToSource(sid, snippetText).then(ok => {
                 if (!ok) {
                     safeSendMessage({ type: 'NAVIGATE_TO_SOURCE', payload: { pageUrl: it.pageUrl || location.href, sourceId: sid } }, (r) => {
                         if (r && r.ok) {
-                            navBtn.textContent = r.openedNewTab ? 'Abriendo...' : 'Ir al mensaje';
+                            navBtn.textContent = r.openedNewTab ? __('opening', 'Abriendo...') : __('go_to_message', 'Ir al mensaje');
                             setTimeout(() => {
-                                navBtn.textContent = 'Ir al mensaje';
+                                navBtn.textContent = __('go_to_message', 'Ir al mensaje');
                                 navBtn.disabled = false;
                             }, 1200);
                         }
                         else {
-                            navBtn.textContent = 'No encontrado';
+                            navBtn.textContent = __('not_found', 'No encontrado');
                             setTimeout(() => {
-                                navBtn.textContent = 'Ir al mensaje';
+                                navBtn.textContent = __('go_to_message', 'Ir al mensaje');
                                 navBtn.disabled = false;
                             }, 1500);
                         }
@@ -651,14 +663,14 @@ function renderSavedItems(items) {
                 }
                 else {
                     setTimeout(() => {
-                        navBtn.textContent = 'Ir al mensaje';
+                        navBtn.textContent = __('go_to_message', 'Ir al mensaje');
                         navBtn.disabled = false;
                     }, 500);
                 }
             }).catch(() => {
-                navBtn.textContent = 'No encontrado';
+                navBtn.textContent = __('not_found', 'No encontrado');
                 setTimeout(() => {
-                    navBtn.textContent = 'Ir al mensaje';
+                    navBtn.textContent = __('go_to_message', 'Ir al mensaje');
                     navBtn.disabled = false;
                 }, 1500);
             });
@@ -1184,7 +1196,7 @@ function makeSelectionButton() {
     const b = document.createElement('button');
     b.id = 'ia-selection-save-btn';
     b.type = 'button';
-    b.textContent = 'Guardar selección';
+    b.textContent = __('save_selection', 'Guardar selección');
     Object.assign(b.style, {
         position: 'fixed',
         zIndex: '2147483647',
@@ -1223,11 +1235,11 @@ function makeSelectionButton() {
         catch (e) { /* ignore insertion errors */ }
         safeSendMessage({ type: 'SAVE_CHAT_DATA', payload: { sourceId: id, messageText: txt, pageUrl: location.href } }, (r) => {
             try {
-                if (r && (r.ok || r.item)) {
-                    b.textContent = 'Guardado';
+                    if (r && (r.ok || r.item)) {
+                    b.textContent = __('saved', 'Guardado');
                 }
                 else {
-                    b.textContent = 'Error';
+                    b.textContent = __('error', 'Error');
                 }
                 try {
                     loadMindMapForPage();
@@ -1239,7 +1251,7 @@ function makeSelectionButton() {
                 catch (_) { }
             }
             catch (_) { }
-            setTimeout(() => { hideSelectionButton(); b.textContent = 'Guardar selección'; }, 900);
+            setTimeout(() => { hideSelectionButton(); b.textContent = __('save_selection', 'Guardar selección'); }, 900);
         });
         s?.removeAllRanges();
     });
@@ -1444,11 +1456,11 @@ function injectInto(container) {
             mb.dataset.scope = 'message';
             mb.addEventListener('click', (ev) => {
                 ev.stopPropagation();
-                mb.textContent = 'Guardando...';
+                mb.textContent = __('saving', 'Guardando...');
                 safeSendMessage({ type: 'SAVE_CHAT_DATA', payload: { sourceId, messageText: (container.textContent || '').trim(), pageUrl: location.href } }, (r) => {
                     try {
                         if (r && (r.ok || r.item)) {
-                            mb.textContent = 'Guardado';
+                            mb.textContent = __('saved', 'Guardado');
                         }
                         else {
                             mb.textContent = 'Error';
@@ -1475,7 +1487,7 @@ function injectInto(container) {
             fb.dataset.scope = 'fragment';
             fb.addEventListener('click', (ev) => {
                 ev.stopPropagation();
-                fb.textContent = 'Guardando...';
+                fb.textContent = __('saving', 'Guardando...');
                 const snippet = (c.textContent || '').trim() || fullText;
                 try {
                     c.dataset.sourceId = fid;
@@ -1485,7 +1497,7 @@ function injectInto(container) {
                 safeSendMessage({ type: 'SAVE_CHAT_DATA', payload: { sourceId: fid, messageText: snippet, pageUrl: location.href } }, (r) => {
                     try {
                         if (r && (r.ok || r.item)) {
-                            fb.textContent = 'Guardado';
+                            fb.textContent = __('saved', 'Guardado');
                         }
                         else {
                             fb.textContent = 'Error';
