@@ -1,7 +1,7 @@
 {
   "name": "ai-chat-knowledge-organizer",
   "version": "0.1.0",
-  "description": "Chrome extension skeleton for capturing chat messages and structuring them with Gemini",
+  "description": "Chrome extension skeleton for capturing chat messages and structuring them",
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",

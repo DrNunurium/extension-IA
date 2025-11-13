@@ -1128,6 +1128,14 @@ if (chromeRuntime && chromeRuntime.onMessage && typeof chromeRuntime.onMessage.a
         return undefined;
     });
 }
+// Notify other extension contexts that this content script has finished
+// registering its message listener and is ready to receive commands.
+try {
+    if (chromeRuntime && chromeRuntime.sendMessage) {
+        chromeRuntime.sendMessage({ type: 'IA_PANEL_READY' }, () => { /* ignore response */ });
+    }
+}
+catch (_) { }
 // Small bootstrap: try to create selection button listeners later if desired. For now just ensure listener exists.
 // Expose nothing; keep minimal.
 // --- Selection and fragment save buttons -----------------------------------

@@ -2,17 +2,6 @@
 
 document.addEventListener('DOMContentLoaded', () => {
   const btn = document.getElementById('open') as HTMLButtonElement | null;
-  const optionsBtn = document.getElementById('openOptions') as HTMLButtonElement | null;
-  if (optionsBtn) {
-    optionsBtn.addEventListener('click', () => {
-      if (chrome.runtime.openOptionsPage) {
-        chrome.runtime.openOptionsPage();
-      } else {
-        const url = chrome.runtime.getURL('src/options.html');
-        chrome.tabs.create({ url });
-      }
-    });
-  }
 
   if (!btn) return;
   btn.addEventListener('click', async () => {
@@ -29,16 +18,44 @@ document.addEventListener('DOMContentLoaded', () => {
             const lastErr = chrome.runtime.lastError;
             if (lastErr) {
               console.debug('No content script listener in active tab or error:', lastErr.message);
-              // fallback: open sidebar page in a new tab and inform the user
-              const url = chrome.runtime.getURL('src/sidebar.html');
-              chrome.tabs.create({ url }, () => {
-                if (statusDiv) statusDiv.textContent = 'La página no admite el panel en esta pestaña. Se abrió en una nueva pestaña.';
-                if (actionsDiv) {
-                  actionsDiv.innerHTML = '<button id="closePopup">Cerrar</button>';
-                  const closeBtn = document.getElementById('closePopup') as HTMLButtonElement | null;
-                  if (closeBtn) closeBtn.addEventListener('click', () => window.close());
-                }
-              });
+              // Try to inject the content script into the active tab so the panel
+              // can open in the same tab (user requested same-tab behavior).
+              try {
+                chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['src/contentScript.js'] }, () => {
+                  const execErr = chrome.runtime.lastError;
+                  if (execErr) {
+                    console.debug('Failed to inject content script:', execErr.message);
+                    if (statusDiv) statusDiv.textContent = 'No se puede mostrar el panel en esta pestaña.';
+                    if (actionsDiv) actionsDiv.innerHTML = '<button id="closePopup">Cerrar</button>';
+                    const closeBtn = document.getElementById('closePopup') as HTMLButtonElement | null;
+                    if (closeBtn) closeBtn.addEventListener('click', () => window.close());
+                    return;
+                  }
+                  // After injecting, give the page a tick to initialize listeners,
+                  // then attempt to send the message again. This avoids a race
+                  // where the injected script hasn't yet registered its onMessage
+                  // handler and would ignore the first toggle.
+                  setTimeout(() => {
+                    chrome.tabs.sendMessage(t.id, { type: 'TOGGLE_SIDE_PANEL' }, (resp2) => {
+                    const err2 = chrome.runtime.lastError;
+                    if (err2) {
+                      console.debug('Message failed after injection:', err2.message);
+                      if (statusDiv) statusDiv.textContent = 'No se pudo abrir el panel en esta pestaña.';
+                      return;
+                    }
+                    if (statusDiv) statusDiv.textContent = 'Panel abierto en esta pestaña.';
+                    if (actionsDiv) {
+                      actionsDiv.innerHTML = '<button id="closePopup">Cerrar</button>';
+                      const closeBtn2 = document.getElementById('closePopup') as HTMLButtonElement | null;
+                      if (closeBtn2) closeBtn2.addEventListener('click', () => window.close());
+                    }
+                    });
+                  }, 120);
+                });
+              } catch (injectErr) {
+                console.error('Injection attempt failed', injectErr);
+                if (statusDiv) statusDiv.textContent = 'No se puede mostrar el panel en esta pestaña.';
+              }
               return;
             }
             // success: panel toggled in-page
