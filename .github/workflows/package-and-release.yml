@@ -71,12 +71,27 @@ jobs:
                 sed 's/"/\\"/g' release-notes.md >> $GITHUB_OUTPUT || true
                 echo "EOF" >> $GITHUB_OUTPUT
 
+            - name: Select asset to upload
+              id: select_asset
+              run: |
+                ASSET="dist/extension.zip"
+                echo "Checking for english-specific zip asset..."
+                if echo "${GITHUB_REF_NAME}" | grep -q -- '-en$' 2>/dev/null; then
+                  if ls dist/extension-IA-en*.zip >/dev/null 2>&1; then
+                    ASSET=$(ls dist/extension-IA-en*.zip | head -n1)
+                    echo "Found english asset: $ASSET"
+                  else
+                    echo "No english asset found, using default dist/extension.zip"
+                  fi
+                fi
+                echo "asset=$ASSET" >> $GITHUB_OUTPUT
+
             - name: Create Release and upload asset
               uses: softprops/action-gh-release@v1
               with:
                 tag_name: ${{ github.ref_name }}
                 body: ${{ steps.changelog.outputs.body }}
-                files: dist/extension.zip
+                files: ${{ steps.select_asset.outputs.asset }}
               env:
                 GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
