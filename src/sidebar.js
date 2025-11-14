@@ -7,7 +7,7 @@ function renderGroups(groups, itemsMap) {
     container.innerHTML = '';
     const groupKeys = Object.keys(groups || {});
     if (!groupKeys.length) {
-        container.innerHTML = '<p>' + ((chrome && chrome.i18n && chrome.i18n.getMessage) ? chrome.i18n.getMessage('no_items') : 'No hay elementos guardados todavía.') + '</p>';
+        container.innerHTML = '<p>' + (chrome && chrome.i18n && chrome.i18n.getMessage ? chrome.i18n.getMessage('no_items') : 'No hay elementos guardados todavía.') + '</p>';
         return;
     }
     for (const key of groupKeys) {

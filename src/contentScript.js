@@ -10,33 +10,33 @@ const PANEL_FONT = "'Roboto','Noto Sans','Segoe UI',Arial,sans-serif";
 let currentSavedItems = [];
 let currentSearchQuery = '';
 let searchInputEl = null;
-    title.textContent = it.title || (it.original_text || '').slice(0, 80) || __('saved_fragment', 'Fragmento guardado');
+const chromeRuntime = globalThis.chrome?.runtime ?? null;
 const PANEL_STYLE_ID = 'ia-panel-theme';
-    messageLine.textContent = it.original_text || it.summary || __('original_not_found', 'No se encontró el texto original.');
+let panelHostElement = null;
 let panelShadowRoot = null;
 let panelKeydownHandler = null;
-        viewBtn.textContent = __('view_text', 'Ver texto');
+// Phrases to hide and remove from storage/UI (case-insensitive substrings).
 const BANNED_PHRASES = [
     // Keep only highly specific phrases so legitimate snippets are not removed.
     'método para navegación rápida en conversación',
     'método para que el usuario pueda regresar rápidamente a secciones previas de una conversación'
-                viewBtn.textContent = __('view_text', 'Ver texto');
+];
 function isBannedText(text) {
     if (!text)
         return false;
     const low = String(text).toLowerCase();
-                viewBtn.textContent = __('hide_text', 'Ocultar texto');
+    return BANNED_PHRASES.some(p => low.includes(p));
 }
-// Simple i18n helper: uses chrome.i18n when available, otherwise falls back to provided English/Spanish defaults.
+// i18n helper
 function __(key, fallback) {
     try {
-        navBtn.textContent = __('go_to_message', 'Ir al mensaje');
+        if (globalThis.chrome && chrome.i18n && typeof chrome.i18n.getMessage === 'function') {
             const m = chrome.i18n.getMessage(key);
             if (m)
                 return m;
         }
     }
-    catch (e) { /* ignore */ }
+    catch (e) { }
     return fallback || '';
 }
 function normalizeUrlString(raw) {
@@ -76,7 +76,7 @@ function normalizeForSearch(text) {
     if (!text)
         return '';
     return String(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
-        delBtn.textContent = __('delete', 'Eliminar');
+}
 function getChromeThemeColors() {
     const prefersDark = globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.matches ?? false;
     if (prefersDark) {
@@ -290,14 +290,13 @@ function ensurePanelHost() {
     // overlap the search card
     content.style.paddingTop = '56px';
     panelShadowRoot.appendChild(content);
-    
     // add close button in the top-right corner of the panel
     try {
         // add 'Buy me a coffee' button in the top-left corner
         const buy = document.createElement('button');
         buy.id = 'ia-panel-buyme';
         buy.type = 'button';
-        buy.textContent = __('buy_me_coffee', 'Buy me a coffee ☕');
+        buy.textContent = 'Buy me a coffee ☕';
         Object.assign(buy.style, {
             position: 'absolute',
             top: '8px',
@@ -324,7 +323,7 @@ function ensurePanelHost() {
         const btn = document.createElement('button');
         btn.id = 'ia-panel-close';
         btn.type = 'button';
-        btn.textContent = __('close_x', '✕');
+        btn.textContent = '✕';
         Object.assign(btn.style, {
             position: 'absolute',
             top: '8px',
@@ -447,14 +446,14 @@ function renderMindMap(map) {
             const mapCard = createChromeCard(useColors);
             mapCard.id = 'ia-map-card';
             const heading = document.createElement('div');
-            heading.textContent = map.titulo_central || __('map_default_title', 'Mapa conceptual');
+            heading.textContent = map.titulo_central || 'Mapa conceptual';
             heading.style.fontWeight = '600';
             heading.style.fontSize = '15px';
             heading.style.color = useColors.textPrimary;
             mapCard.appendChild(heading);
             if (Array.isArray(map.conceptos_clave) && map.conceptos_clave.length) {
                 const sub = document.createElement('div');
-                sub.textContent = __('key_concepts', 'Conceptos clave');
+                sub.textContent = 'Conceptos clave';
                 sub.style.fontSize = '12px';
                 sub.style.color = useColors.textSecondary;
                 sub.style.fontWeight = '500';
@@ -474,7 +473,7 @@ function renderMindMap(map) {
             }
             if (map.resumen_ejecutivo) {
                 const resumeLabel = document.createElement('div');
-                resumeLabel.textContent = __('executive_summary', 'Resumen ejecutivo');
+                resumeLabel.textContent = 'Resumen ejecutivo';
                 resumeLabel.style.fontSize = '12px';
                 resumeLabel.style.color = useColors.textSecondary;
                 resumeLabel.style.fontWeight = '500';
@@ -493,7 +492,7 @@ function renderMindMap(map) {
         const savedCard = createChromeCard(useColors);
         savedCard.id = 'ia-saved-card';
         const savedTitle = document.createElement('div');
-        savedTitle.textContent = __('saved_conversations', 'Conversaciones guardadas');
+        savedTitle.textContent = 'Conversaciones guardadas';
         savedTitle.style.fontWeight = '600';
         savedTitle.style.fontSize = '15px';
         savedTitle.style.color = useColors.textPrimary;
@@ -640,7 +639,7 @@ function renderSavedItems(items) {
             }
             catch (_) { }
             navBtn.disabled = true;
-                    navBtn.textContent = __('searching', 'Buscando...');
+            navBtn.textContent = __('searching', 'Buscando...');
             const snippetText = it.original_text || it.summary || it.title || '';
             scrollToSource(sid, snippetText).then(ok => {
                 if (!ok) {
@@ -1141,14 +1140,6 @@ if (chromeRuntime && chromeRuntime.onMessage && typeof chromeRuntime.onMessage.a
         return undefined;
     });
 }
-// Notify other extension contexts that this content script has finished
-// registering its message listener and is ready to receive commands.
-try {
-    if (chromeRuntime && chromeRuntime.sendMessage) {
-        chromeRuntime.sendMessage({ type: 'IA_PANEL_READY' }, () => { /* ignore response */ });
-    }
-}
-catch (_) { }
 // Small bootstrap: try to create selection button listeners later if desired. For now just ensure listener exists.
 // Expose nothing; keep minimal.
 // --- Selection and fragment save buttons -----------------------------------
@@ -1235,7 +1226,7 @@ function makeSelectionButton() {
         catch (e) { /* ignore insertion errors */ }
         safeSendMessage({ type: 'SAVE_CHAT_DATA', payload: { sourceId: id, messageText: txt, pageUrl: location.href } }, (r) => {
             try {
-                    if (r && (r.ok || r.item)) {
+                if (r && (r.ok || r.item)) {
                     b.textContent = __('saved', 'Guardado');
                 }
                 else {
