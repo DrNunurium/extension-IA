@@ -508,7 +508,7 @@ function renderMindMap(map) {
                 resume.style.lineHeight = '1.5';
                 mapCard.appendChild(resume);
             }
-            layout.appendChild(mapCard);
+            // layout.appendChild(mapCard);
         }
         const savedCard = createChromeCard(useColors);
         savedCard.id = 'ia-saved-card';

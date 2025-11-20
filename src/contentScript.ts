@@ -392,139 +392,139 @@ function createChromeCard(colors) {
 }
 
 function renderMindMap(map) {
-  const shadow = ensurePanelHost();
-  if (!shadow) return;
-  const content = shadow.getElementById(IDS.PANEL_CONTENT);
-  if (!content) return;
-  // Base theme colors
-  const colors = getChromeThemeColors();
-  // Try to fetch the browser active-window color from background; fallback to accent
-  getBrowserAccentColor(400)
-    .then((browserColor) => {
-      const useColors = { ...colors };
-      if (browserColor) {
-        useColors.accent = browserColor;
-      }
-      applyPanelHostFrame(useColors);
-      applyPanelChromeStyles(shadow, useColors);
-      // continue render
-      content.innerHTML = '';
-      const layout = document.createElement('div');
-      layout.style.display = 'flex';
-      layout.style.flexDirection = 'column';
-      layout.style.gap = '12px';
-      layout.style.padding = '12px';
-      layout.style.flex = '1';
-      layout.style.background = useColors.panelBg;
-      const searchCard = createChromeCard(useColors);
-      searchCard.id = 'ia-search-card';
-      const searchLabel = document.createElement('label');
-      searchLabel.textContent = __('search_label', 'Buscar conversaciones');
-      searchLabel.style.fontSize = '12px';
-      searchLabel.style.color = useColors.textSecondary;
-      searchLabel.style.fontWeight = '500';
-      searchCard.appendChild(searchLabel);
-      const searchInput = document.createElement('input');
-      searchInput.type = 'search';
-      searchInput.placeholder = __('search_placeholder', 'Buscar por título o contenido');
-      searchInput.value = currentSearchQuery;
-      Object.assign(searchInput.style, {
-        width: '100%',
-        padding: '8px 12px',
-        borderRadius: '8px',
-        border: `1px solid ${useColors.inputBorder}`,
-        background: useColors.inputBg,
-        color: useColors.inputText,
-        fontFamily: PANEL_FONT,
-        fontSize: '14px',
-      });
-      searchInput.addEventListener('keydown', (ev) => ev.stopPropagation());
-      searchInput.addEventListener('input', () => {
-        currentSearchQuery = searchInput.value || '';
-        renderSavedItems(currentSavedItems);
-      });
-      searchCard.appendChild(searchInput);
-      searchInputEl = searchInput;
-      layout.appendChild(searchCard);
-      if (map) {
-        const mapCard = createChromeCard(useColors);
-        mapCard.id = 'ia-map-card';
-        const heading = document.createElement('div');
-        heading.textContent = map.titulo_central || 'Mapa conceptual';
-        heading.style.fontWeight = '600';
-        heading.style.fontSize = '15px';
-        heading.style.color = useColors.textPrimary;
-        mapCard.appendChild(heading);
-        if (Array.isArray(map.conceptos_clave) && map.conceptos_clave.length) {
-          const sub = document.createElement('div');
-          sub.textContent = 'Conceptos clave';
-          sub.style.fontSize = '12px';
-          sub.style.color = useColors.textSecondary;
-          sub.style.fontWeight = '500';
-          mapCard.appendChild(sub);
-          const list = document.createElement('ul');
-          list.style.margin = '0';
-          list.style.paddingLeft = '18px';
-          list.style.color = useColors.textPrimary;
-          list.style.fontSize = '13px';
-          map.conceptos_clave.forEach((c) => {
-            const li = document.createElement('li');
-            li.textContent = c;
-            li.style.marginBottom = '2px';
-            list.appendChild(li);
-          });
-          mapCard.appendChild(list);
+    const shadow = ensurePanelHost();
+    if (!shadow)
+        return;
+    const content = shadow.getElementById(IDS.PANEL_CONTENT);
+    if (!content)
+        return;
+    // Base theme colors
+    const colors = getChromeThemeColors();
+    // Try to fetch the browser active-window color from background; fallback to accent
+    getBrowserAccentColor(400).then((browserColor) => {
+        const useColors = { ...colors };
+        if (browserColor) {
+            useColors.accent = browserColor;
         }
-        if (map.resumen_ejecutivo) {
-          const resumeLabel = document.createElement('div');
-          resumeLabel.textContent = 'Resumen ejecutivo';
-          resumeLabel.style.fontSize = '12px';
-          resumeLabel.style.color = useColors.textSecondary;
-          resumeLabel.style.fontWeight = '500';
-          resumeLabel.style.marginTop = '6px';
-          mapCard.appendChild(resumeLabel);
-          const resume = document.createElement('p');
-          resume.textContent = map.resumen_ejecutivo;
-          resume.style.margin = '4px 0 0';
-          resume.style.fontSize = '13px';
-          resume.style.color = useColors.textPrimary;
-          resume.style.lineHeight = '1.5';
-          mapCard.appendChild(resume);
+        applyPanelHostFrame(useColors);
+        applyPanelChromeStyles(shadow, useColors);
+        // continue render
+        content.innerHTML = '';
+        const layout = document.createElement('div');
+        layout.style.display = 'flex';
+        layout.style.flexDirection = 'column';
+        layout.style.gap = '12px';
+        layout.style.padding = '12px';
+        layout.style.flex = '1';
+        layout.style.background = useColors.panelBg;
+        const searchCard = createChromeCard(useColors);
+        searchCard.id = 'ia-search-card';
+        const searchLabel = document.createElement('label');
+        searchLabel.textContent = __('search_label', 'Buscar conversaciones');
+        searchLabel.style.fontSize = '12px';
+        searchLabel.style.color = useColors.textSecondary;
+        searchLabel.style.fontWeight = '500';
+        searchCard.appendChild(searchLabel);
+        const searchInput = document.createElement('input');
+        searchInput.type = 'search';
+        searchInput.placeholder = __('search_placeholder', 'Buscar por título o contenido');
+        searchInput.value = currentSearchQuery;
+        Object.assign(searchInput.style, {
+            width: '100%',
+            padding: '8px 12px',
+            borderRadius: '8px',
+            border: `1px solid ${useColors.inputBorder}`,
+            background: useColors.inputBg,
+            color: useColors.inputText,
+            fontFamily: PANEL_FONT,
+            fontSize: '14px'
+        });
+        searchInput.addEventListener('keydown', ev => ev.stopPropagation());
+        searchInput.addEventListener('input', () => {
+            currentSearchQuery = searchInput.value || '';
+            renderSavedItems(currentSavedItems);
+        });
+        searchCard.appendChild(searchInput);
+        searchInputEl = searchInput;
+        layout.appendChild(searchCard);
+        if (map) {
+            const mapCard = createChromeCard(useColors);
+            mapCard.id = 'ia-map-card';
+            const heading = document.createElement('div');
+            heading.textContent = map.titulo_central || 'Mapa conceptual';
+            heading.style.fontWeight = '600';
+            heading.style.fontSize = '15px';
+            heading.style.color = useColors.textPrimary;
+            mapCard.appendChild(heading);
+            if (Array.isArray(map.conceptos_clave) && map.conceptos_clave.length) {
+                const sub = document.createElement('div');
+                sub.textContent = 'Conceptos clave';
+                sub.style.fontSize = '12px';
+                sub.style.color = useColors.textSecondary;
+                sub.style.fontWeight = '500';
+                mapCard.appendChild(sub);
+                const list = document.createElement('ul');
+                list.style.margin = '0';
+                list.style.paddingLeft = '18px';
+                list.style.color = useColors.textPrimary;
+                list.style.fontSize = '13px';
+                map.conceptos_clave.forEach(c => {
+                    const li = document.createElement('li');
+                    li.textContent = c;
+                    li.style.marginBottom = '2px';
+                    list.appendChild(li);
+                });
+                mapCard.appendChild(list);
+            }
+            if (map.resumen_ejecutivo) {
+                const resumeLabel = document.createElement('div');
+                resumeLabel.textContent = 'Resumen ejecutivo';
+                resumeLabel.style.fontSize = '12px';
+                resumeLabel.style.color = useColors.textSecondary;
+                resumeLabel.style.fontWeight = '500';
+                resumeLabel.style.marginTop = '6px';
+                mapCard.appendChild(resumeLabel);
+                const resume = document.createElement('p');
+                resume.textContent = map.resumen_ejecutivo;
+                resume.style.margin = '4px 0 0';
+                resume.style.fontSize = '13px';
+                resume.style.color = useColors.textPrimary;
+                resume.style.lineHeight = '1.5';
+                mapCard.appendChild(resume);
+            }
+            layout.appendChild(mapCard);
         }
-        layout.appendChild(mapCard);
-      }
-      const savedCard = createChromeCard(useColors);
-      savedCard.id = 'ia-saved-card';
-      const savedTitle = document.createElement('div');
-      savedTitle.textContent = 'Conversaciones guardadas';
-      savedTitle.style.fontWeight = '600';
-      savedTitle.style.fontSize = '15px';
-      savedTitle.style.color = useColors.textPrimary;
-      savedCard.appendChild(savedTitle);
-      const savedList = document.createElement('div');
-      savedList.id = 'ia-saved-list';
-      savedList.style.display = 'flex';
-      savedList.style.flexDirection = 'column';
-      savedList.style.gap = '8px';
-      savedCard.appendChild(savedList);
-      layout.appendChild(savedCard);
-      content.appendChild(layout);
-      loadSavedItemsForPage();
-    })
-    .catch(() => {
-      // fallback synchronous render if promise rejects
-      applyPanelHostFrame(colors);
-      applyPanelChromeStyles(shadow, colors);
-      content.innerHTML = '';
-      const layout = document.createElement('div');
-      layout.style.display = 'flex';
-      layout.style.flexDirection = 'column';
-      layout.style.gap = '12px';
-      layout.style.padding = '12px';
-      layout.style.flex = '1';
-      layout.style.background = colors.panelBg;
-      content.appendChild(layout);
-      loadSavedItemsForPage();
+        const savedCard = createChromeCard(useColors);
+        savedCard.id = 'ia-saved-card';
+        const savedTitle = document.createElement('div');
+        savedTitle.textContent = 'Conversaciones guardadas';
+        savedTitle.style.fontWeight = '600';
+        savedTitle.style.fontSize = '15px';
+        savedTitle.style.color = useColors.textPrimary;
+        savedCard.appendChild(savedTitle);
+        const savedList = document.createElement('div');
+        savedList.id = 'ia-saved-list';
+        savedList.style.display = 'flex';
+        savedList.style.flexDirection = 'column';
+        savedList.style.gap = '8px';
+        savedCard.appendChild(savedList);
+        layout.appendChild(savedCard);
+        content.appendChild(layout);
+        loadSavedItemsForPage();
+    }).catch(() => {
+        // fallback synchronous render if promise rejects
+        applyPanelHostFrame(colors);
+        applyPanelChromeStyles(shadow, colors);
+        content.innerHTML = '';
+        const layout = document.createElement('div');
+        layout.style.display = 'flex';
+        layout.style.flexDirection = 'column';
+        layout.style.gap = '12px';
+        layout.style.padding = '12px';
+        layout.style.flex = '1';
+        layout.style.background = colors.panelBg;
+        content.appendChild(layout);
+        loadSavedItemsForPage();
     });
   // original synchronous render moved inside promise resolution above
 }
