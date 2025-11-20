@@ -1,14 +1,22 @@
 // Minimal sidebar script: reads saved items from chrome.storage and renders a simple list.
 // This is a tiny placeholder so the compiled `sidebar.js` exists for the HTML to load.
 
-function renderGroups(groups: Record<string, { title: string; items: string[]; updated_at: string }>, itemsMap: Record<string, any>) {
+function renderGroups(
+  groups: Record<string, { title: string; items: string[]; updated_at: string }>,
+  itemsMap: Record<string, any>,
+) {
   const container = document.getElementById('context-tree-list');
   if (!container) return;
   container.innerHTML = '';
 
   const groupKeys = Object.keys(groups || {});
   if (!groupKeys.length) {
-    container.innerHTML = '<p>' + (chrome && chrome.i18n && chrome.i18n.getMessage ? chrome.i18n.getMessage('no_items') : 'No hay elementos guardados todavía.') + '</p>';
+    container.innerHTML =
+      '<p>' +
+      (chrome && chrome.i18n && chrome.i18n.getMessage
+        ? chrome.i18n.getMessage('no_items')
+        : 'No hay elementos guardados todavía.') +
+      '</p>';
     return;
   }
 
@@ -33,17 +41,24 @@ function renderGroups(groups: Record<string, { title: string; items: string[]; u
     for (const sid of group.items) {
       const item = itemsMap[sid];
       const li = document.createElement('li');
-      const title = item?.title || item?.source_id || (item?.original_text || '').slice?.(0, 80) || sid;
+      const title =
+        item?.title || item?.source_id || (item?.original_text || '').slice?.(0, 80) || sid;
       const span = document.createElement('span');
       span.textContent = title;
       span.style.marginRight = '8px';
 
       const goto = document.createElement('button');
-      goto.textContent = (chrome && chrome.i18n && chrome.i18n.getMessage) ? chrome.i18n.getMessage('go_to_message') : 'Ir al mensaje';
+      goto.textContent =
+        chrome && chrome.i18n && chrome.i18n.getMessage
+          ? chrome.i18n.getMessage('go_to_message')
+          : 'Ir al mensaje';
       goto.style.marginLeft = '8px';
       goto.addEventListener('click', () => {
         try {
-          chrome.runtime.sendMessage({ type: 'NAVIGATE_TO_SOURCE', payload: { pageUrl: item.pageUrl || window.location.href, sourceId: sid } });
+          chrome.runtime.sendMessage({
+            type: 'NAVIGATE_TO_SOURCE',
+            payload: { pageUrl: item.pageUrl || window.location.href, sourceId: sid },
+          });
         } catch (e) {
           console.error('Failed to request navigation', e);
         }
@@ -61,7 +76,7 @@ function renderGroups(groups: Record<string, { title: string; items: string[]; u
 }
 
 function loadGroups() {
-  const storage = (chrome && chrome.storage && chrome.storage.local) ? chrome.storage.local : null;
+  const storage = chrome && chrome.storage ? chrome.storage.sync ?? chrome.storage.local : null;
   if (!storage) {
     renderGroups({}, {});
     return;
@@ -82,11 +97,15 @@ function loadGroups() {
 }
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    loadGroups();
-    // listen for storage changes to update live
-    chrome.storage.onChanged.addListener(() => loadGroups());
-  }, { once: true });
+  document.addEventListener(
+    'DOMContentLoaded',
+    () => {
+      loadGroups();
+      // listen for storage changes to update live
+      chrome.storage.onChanged.addListener(() => loadGroups());
+    },
+    { once: true },
+  );
 } else {
   loadGroups();
   chrome.storage.onChanged.addListener(() => loadGroups());

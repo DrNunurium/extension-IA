@@ -5,13 +5,15 @@ function showStatus(message: string, isError = false) {
   status.className = isError ? 'error' : '';
 }
 
+const syncStorageArea = chrome?.storage?.sync ?? chrome?.storage?.local;
+
 document.addEventListener('DOMContentLoaded', () => {
   const input = document.getElementById('apiKey') as HTMLInputElement | null;
   const form = document.getElementById('apiKeyForm') as HTMLFormElement | null;
   const clearBtn = document.getElementById('clearKey') as HTMLButtonElement | null;
   if (!input || !form || !clearBtn) return;
 
-  chrome.storage.local.get(['geminiApiKey'], (data: Record<string, any>) => {
+  syncStorageArea?.get(['geminiApiKey'], (data: Record<string, any>) => {
     const key = data?.geminiApiKey || '';
     input.value = key;
     if (key) showStatus('Clave cargada.');
@@ -24,7 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
       showStatus('Introduce una clave válida.', true);
       return;
     }
-    chrome.storage.local.set({ geminiApiKey: value }, () => {
+    syncStorageArea?.set({ geminiApiKey: value }, () => {
       if (chrome.runtime.lastError) {
         showStatus(`Error al guardar: ${chrome.runtime.lastError.message}`, true);
         return;
@@ -34,7 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   clearBtn.addEventListener('click', () => {
-    chrome.storage.local.remove(['geminiApiKey'], () => {
+    syncStorageArea?.remove(['geminiApiKey'], () => {
       if (chrome.runtime.lastError) {
         showStatus(`Error al borrar: ${chrome.runtime.lastError.message}`, true);
         return;

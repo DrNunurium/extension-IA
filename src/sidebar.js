@@ -7,7 +7,12 @@ function renderGroups(groups, itemsMap) {
     container.innerHTML = '';
     const groupKeys = Object.keys(groups || {});
     if (!groupKeys.length) {
-        container.innerHTML = '<p>' + (chrome && chrome.i18n && chrome.i18n.getMessage ? chrome.i18n.getMessage('no_items') : 'No hay elementos guardados todavía.') + '</p>';
+        container.innerHTML =
+            '<p>' +
+                (chrome && chrome.i18n && chrome.i18n.getMessage
+                    ? chrome.i18n.getMessage('no_items')
+                    : 'No hay elementos guardados todavía.') +
+                '</p>';
         return;
     }
     for (const key of groupKeys) {
@@ -33,11 +38,17 @@ function renderGroups(groups, itemsMap) {
             span.textContent = title;
             span.style.marginRight = '8px';
             const goto = document.createElement('button');
-            goto.textContent = (chrome && chrome.i18n && chrome.i18n.getMessage) ? chrome.i18n.getMessage('go_to_message') : 'Ir al mensaje';
+            goto.textContent =
+                chrome && chrome.i18n && chrome.i18n.getMessage
+                    ? chrome.i18n.getMessage('go_to_message')
+                    : 'Ir al mensaje';
             goto.style.marginLeft = '8px';
             goto.addEventListener('click', () => {
                 try {
-                    chrome.runtime.sendMessage({ type: 'NAVIGATE_TO_SOURCE', payload: { pageUrl: item.pageUrl || window.location.href, sourceId: sid } });
+                    chrome.runtime.sendMessage({
+                        type: 'NAVIGATE_TO_SOURCE',
+                        payload: { pageUrl: item.pageUrl || window.location.href, sourceId: sid },
+                    });
                 }
                 catch (e) {
                     console.error('Failed to request navigation', e);
@@ -53,7 +64,7 @@ function renderGroups(groups, itemsMap) {
     }
 }
 function loadGroups() {
-    const storage = (chrome && chrome.storage && chrome.storage.local) ? chrome.storage.local : null;
+    const storage = chrome && chrome.storage ? chrome.storage.sync ?? chrome.storage.local : null;
     if (!storage) {
         renderGroups({}, {});
         return;

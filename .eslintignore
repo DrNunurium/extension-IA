@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.zip
+*.png
+*.jpg
+scripts/generate-icons.js
+src/vendor/
+src/vendor/**
+src/**/*.js

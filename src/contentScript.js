@@ -1,10 +1,12 @@
 // Content script: injects an in-page side panel and responds to background/popup messages.
 // Minimal, robust implementation to ensure the panel opens in the same tab and
 // SCROLL_TO_SOURCE messages are handled to scroll/highlight saved fragments.
+/* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck
+/* eslint-enable @typescript-eslint/ban-ts-comment */
 const IDS = {
     PANEL_HOST: 'ia-sidepanel-host',
-    PANEL_CONTENT: 'ia-sidepanel-content'
+    PANEL_CONTENT: 'ia-sidepanel-content',
 };
 const PANEL_FONT = "'Roboto','Noto Sans','Segoe UI',Arial,sans-serif";
 let currentSavedItems = [];
@@ -19,18 +21,20 @@ let panelKeydownHandler = null;
 const BANNED_PHRASES = [
     // Keep only highly specific phrases so legitimate snippets are not removed.
     'método para navegación rápida en conversación',
-    'método para que el usuario pueda regresar rápidamente a secciones previas de una conversación'
+    'método para que el usuario pueda regresar rápidamente a secciones previas de una conversación',
 ];
 function isBannedText(text) {
     if (!text)
         return false;
     const low = String(text).toLowerCase();
-    return BANNED_PHRASES.some(p => low.includes(p));
+    return BANNED_PHRASES.some((p) => low.includes(p));
 }
 // i18n helper
 function __(key, fallback) {
     try {
-        if (globalThis.chrome && chrome.i18n && typeof chrome.i18n.getMessage === 'function') {
+        if (globalThis.chrome &&
+            chrome.i18n &&
+            typeof chrome.i18n.getMessage === 'function') {
             const m = chrome.i18n.getMessage(key);
             if (m)
                 return m;
@@ -48,7 +52,9 @@ function normalizeUrlString(raw) {
         if (path !== '/' && path.endsWith('/'))
             path = path.slice(0, -1);
         const params = [];
-        parsed.searchParams.forEach((value, key) => { params.push([key, value]); });
+        parsed.searchParams.forEach((value, key) => {
+            params.push([key, value]);
+        });
         params.sort((a, b) => {
             if (a[0] === b[0]) {
                 if (a[1] === b[1])
@@ -68,14 +74,19 @@ function normalizeUrlString(raw) {
     }
 }
 function getNormalizedPageKey(url) {
-    const candidate = typeof url === 'string' && url ? url : globalThis.location?.href ?? '';
+    const candidate = typeof url === 'string' && url ? url : (globalThis.location?.href ?? '');
     const normalized = normalizeUrlString(candidate);
     return normalized ?? candidate;
 }
 function normalizeForSearch(text) {
     if (!text)
         return '';
-    return String(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+    return String(text)
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
 }
 function getChromeThemeColors() {
     const prefersDark = globalThis.matchMedia?.('(prefers-color-scheme: dark)')?.matches ?? false;
@@ -93,7 +104,7 @@ function getChromeThemeColors() {
             inputText: '#e8eaed',
             accent: '#8ab4f8',
             accentText: '#202124',
-            messageBg: 'rgba(138,180,248,0.18)'
+            messageBg: 'rgba(138,180,248,0.18)',
         };
     }
     return {
@@ -109,7 +120,7 @@ function getChromeThemeColors() {
         inputText: '#202124',
         accent: '#1a73e8',
         accentText: '#ffffff',
-        messageBg: 'rgba(26,115,232,0.12)'
+        messageBg: 'rgba(26,115,232,0.12)',
     };
 }
 function applyPanelChromeStyles(shadow, colors) {
@@ -173,16 +184,22 @@ function injectMathSanitizer() {
                     console.debug('Math sanitizer injection reported failure or no response', resp);
                 }
             }
-            catch (e) { /* ignore */ }
+            catch (e) {
+                /* ignore */
+            }
         });
     }
-    catch (e) { /* ignore */ }
+    catch (e) {
+        /* ignore */
+    }
 }
 // Ask the background to inject the sanitizer early
 try {
     injectMathSanitizer();
 }
-catch (e) { /* ignore */ }
+catch (e) {
+    /* ignore */
+}
 function applyPanelHostFrame(colors) {
     if (!panelHostElement)
         return;
@@ -261,12 +278,13 @@ function ensurePanelHost() {
             zIndex: '2147483645',
             display: 'flex',
             flexDirection: 'column',
-            boxShadow: '0 0 16px rgba(0,0,0,0.18)'
+            boxShadow: '0 0 16px rgba(0,0,0,0.18)',
         });
         document.body.appendChild(panelHostElement);
     }
     try {
-        panelShadowRoot = panelHostElement.shadowRoot || panelHostElement.attachShadow({ mode: 'open' });
+        panelShadowRoot =
+            panelHostElement.shadowRoot || panelHostElement.attachShadow({ mode: 'open' });
     }
     catch (_) {
         panelShadowRoot = null;
@@ -309,7 +327,7 @@ function ensurePanelHost() {
             fontSize: '13px',
             background: '#FFD54F',
             color: '#000000',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
+            boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
         });
         buy.addEventListener('click', (ev) => {
             ev.stopPropagation();
@@ -317,7 +335,9 @@ function ensurePanelHost() {
             try {
                 window.open('https://www.buymeacoffee.com/yourname', '_blank');
             }
-            catch (e) { /* ignore */ }
+            catch (e) {
+                /* ignore */
+            }
         });
         panelShadowRoot.appendChild(buy);
         const btn = document.createElement('button');
@@ -337,7 +357,7 @@ function ensurePanelHost() {
             cursor: 'pointer',
             fontSize: '16px',
             lineHeight: '1',
-            padding: '0'
+            padding: '0',
         });
         btn.addEventListener('click', (ev) => {
             ev.stopPropagation();
@@ -396,7 +416,8 @@ function renderMindMap(map) {
     // Base theme colors
     const colors = getChromeThemeColors();
     // Try to fetch the browser active-window color from background; fallback to accent
-    getBrowserAccentColor(400).then((browserColor) => {
+    getBrowserAccentColor(400)
+        .then((browserColor) => {
         const useColors = { ...colors };
         if (browserColor) {
             useColors.accent = browserColor;
@@ -432,9 +453,9 @@ function renderMindMap(map) {
             background: useColors.inputBg,
             color: useColors.inputText,
             fontFamily: PANEL_FONT,
-            fontSize: '14px'
+            fontSize: '14px',
         });
-        searchInput.addEventListener('keydown', ev => ev.stopPropagation());
+        searchInput.addEventListener('keydown', (ev) => ev.stopPropagation());
         searchInput.addEventListener('input', () => {
             currentSearchQuery = searchInput.value || '';
             renderSavedItems(currentSavedItems);
@@ -463,7 +484,7 @@ function renderMindMap(map) {
                 list.style.paddingLeft = '18px';
                 list.style.color = useColors.textPrimary;
                 list.style.fontSize = '13px';
-                map.conceptos_clave.forEach(c => {
+                map.conceptos_clave.forEach((c) => {
                     const li = document.createElement('li');
                     li.textContent = c;
                     li.style.marginBottom = '2px';
@@ -506,7 +527,8 @@ function renderMindMap(map) {
         layout.appendChild(savedCard);
         content.appendChild(layout);
         loadSavedItemsForPage();
-    }).catch(() => {
+    })
+        .catch(() => {
         // fallback synchronous render if promise rejects
         applyPanelHostFrame(colors);
         applyPanelChromeStyles(shadow, colors);
@@ -543,7 +565,9 @@ function renderSavedItems(items) {
         : sorted;
     if (!filtered.length) {
         const empty = document.createElement('div');
-        empty.textContent = sorted.length ? `${__('no_results', 'No hay resultados para')} "${currentSearchQuery}".` : __('no_items', 'No hay elementos guardados en esta página.');
+        empty.textContent = sorted.length
+            ? `${__('no_results', 'No hay resultados para')} "${currentSearchQuery}".`
+            : __('no_items', 'No hay elementos guardados en esta página.');
         empty.style.color = colors.textSecondary;
         empty.style.padding = '12px';
         empty.style.borderRadius = '8px';
@@ -570,12 +594,18 @@ function renderSavedItems(items) {
             row.style.background = colors.isDark ? '#303134' : '#f8f9fa';
         });
         const title = document.createElement('div');
-        title.textContent = it.title || (it.original_text || '').slice(0, 80) || __('saved_fragment', 'Fragmento guardado');
+        title.textContent =
+            it.title ||
+                (it.original_text || '').slice(0, 80) ||
+                __('saved_fragment', 'Fragmento guardado');
         title.style.fontWeight = '600';
         title.style.fontSize = '14px';
         title.style.color = colors.textPrimary;
         const messageLine = document.createElement('div');
-        messageLine.textContent = it.original_text || it.summary || __('original_not_found', 'No se encontró el texto original.');
+        messageLine.textContent =
+            it.original_text ||
+                it.summary ||
+                __('original_not_found', 'No se encontró el texto original.');
         messageLine.style.marginTop = '4px';
         messageLine.style.marginBottom = '8px';
         messageLine.style.padding = '10px 12px';
@@ -598,7 +628,7 @@ function renderSavedItems(items) {
             background: colors.accent,
             color: colors.accentText,
             fontWeight: '600',
-            fontFamily: PANEL_FONT
+            fontFamily: PANEL_FONT,
         });
         viewBtn.addEventListener('click', (ev) => {
             ev.stopPropagation();
@@ -623,7 +653,7 @@ function renderSavedItems(items) {
             background: 'transparent',
             color: colors.accent,
             fontWeight: '600',
-            fontFamily: PANEL_FONT
+            fontFamily: PANEL_FONT,
         });
         navBtn.addEventListener('mouseenter', () => {
             navBtn.style.background = colors.isDark ? '#1f3b63' : '#e8f0fe';
@@ -641,11 +671,17 @@ function renderSavedItems(items) {
             navBtn.disabled = true;
             navBtn.textContent = __('searching', 'Buscando...');
             const snippetText = it.original_text || it.summary || it.title || '';
-            scrollToSource(sid, snippetText).then(ok => {
+            scrollToSource(sid, snippetText)
+                .then((ok) => {
                 if (!ok) {
-                    safeSendMessage({ type: 'NAVIGATE_TO_SOURCE', payload: { pageUrl: it.pageUrl || location.href, sourceId: sid } }, (r) => {
+                    safeSendMessage({
+                        type: 'NAVIGATE_TO_SOURCE',
+                        payload: { pageUrl: it.pageUrl || location.href, sourceId: sid },
+                    }, (r) => {
                         if (r && r.ok) {
-                            navBtn.textContent = r.openedNewTab ? __('opening', 'Abriendo...') : __('go_to_message', 'Ir al mensaje');
+                            navBtn.textContent = r.openedNewTab
+                                ? __('opening', 'Abriendo...')
+                                : __('go_to_message', 'Ir al mensaje');
                             setTimeout(() => {
                                 navBtn.textContent = __('go_to_message', 'Ir al mensaje');
                                 navBtn.disabled = false;
@@ -666,7 +702,8 @@ function renderSavedItems(items) {
                         navBtn.disabled = false;
                     }, 500);
                 }
-            }).catch(() => {
+            })
+                .catch(() => {
                 navBtn.textContent = __('not_found', 'No encontrado');
                 setTimeout(() => {
                     navBtn.textContent = __('go_to_message', 'Ir al mensaje');
@@ -685,7 +722,7 @@ function renderSavedItems(items) {
             background: 'transparent',
             color: colors.textSecondary,
             fontWeight: '500',
-            fontFamily: PANEL_FONT
+            fontFamily: PANEL_FONT,
         });
         delBtn.addEventListener('mouseenter', () => {
             delBtn.style.background = colors.isDark ? '#3c4043' : '#f1f3f4';
@@ -749,7 +786,7 @@ function loadSavedItemsForPage() {
                     continue;
                 let normalizedItem = normalizeUrlString(v.pageUrl ?? null) ?? normalizeUrlString(v.normalized_page ?? null);
                 if (!normalizedItem)
-                    normalizedItem = (typeof v.normalized_page === 'string') ? v.normalized_page : null;
+                    normalizedItem = typeof v.normalized_page === 'string' ? v.normalized_page : null;
                 if (!normalizedItem)
                     continue;
                 if (v.normalized_page !== normalizedItem) {
@@ -800,7 +837,9 @@ function loadSavedItemsForPage() {
                 maybeRemoveBanned();
             }
         }
-        catch (_) { /* ignore */ }
+        catch (_) {
+            /* ignore */
+        }
     });
 }
 // Listen to storage changes so panel updates when new items are saved elsewhere
@@ -956,7 +995,7 @@ function findSnippetRangeWithFallback(root, snippetText) {
         }
     };
     // Exact match first
-    let idx = normalized.indexOf(normalizedSnippet);
+    const idx = normalized.indexOf(normalizedSnippet);
     if (idx !== -1) {
         const r = makeRange(idx, normalizedSnippet.length);
         if (r)
@@ -999,7 +1038,10 @@ function applySnippetHighlight(el, snippetText) {
         return null;
     if (matched && normalizeForSearch(snippetText).length !== matched.length) {
         try {
-            console.debug('[IA] applySnippetHighlight: used fallback fragment', { originalLength: normalizeForSearch(snippetText).length, matchedLength: matched.length });
+            console.debug('[IA] applySnippetHighlight: used fallback fragment', {
+                originalLength: normalizeForSearch(snippetText).length,
+                matchedLength: matched.length,
+            });
         }
         catch (_) { }
     }
@@ -1047,7 +1089,9 @@ function highlightElement(el, snippetText) {
     }
     // If direct highlight failed, try the enclosing message container (more likely to contain text nodes)
     try {
-        const container = (el instanceof HTMLElement && typeof el.closest === 'function') ? el.closest(MESSAGE_CONTAINER_SELECTOR) : null;
+        const container = el instanceof HTMLElement && typeof el.closest === 'function'
+            ? el.closest(MESSAGE_CONTAINER_SELECTOR)
+            : null;
         if (container && container instanceof HTMLElement) {
             const containerResult = applySnippetHighlight(container, snippetText);
             if (containerResult) {
@@ -1100,7 +1144,9 @@ async function scrollToSource(sourceId, snippetText) {
     }
 }
 // Message listener
-if (chromeRuntime && chromeRuntime.onMessage && typeof chromeRuntime.onMessage.addListener === 'function') {
+if (chromeRuntime &&
+    chromeRuntime.onMessage &&
+    typeof chromeRuntime.onMessage.addListener === 'function') {
     chromeRuntime.onMessage.addListener((msg, _sender, sendResponse) => {
         if (!msg || !msg.type)
             return;
@@ -1132,10 +1178,13 @@ if (chromeRuntime && chromeRuntime.onMessage && typeof chromeRuntime.onMessage.a
                     sendResponse?.({ ok: false, error: 'missing_source_id' });
                     break;
                 }
-                scrollToSource(sid, snippetText).then(ok => sendResponse?.({ ok })).catch(() => sendResponse?.({ ok: false }));
+                scrollToSource(sid, snippetText)
+                    .then((ok) => sendResponse?.({ ok }))
+                    .catch(() => sendResponse?.({ ok: false }));
                 return true;
             }
-            default: break;
+            default:
+                break;
         }
         return undefined;
     });
@@ -1144,7 +1193,12 @@ if (chromeRuntime && chromeRuntime.onMessage && typeof chromeRuntime.onMessage.a
 // Expose nothing; keep minimal.
 // --- Selection and fragment save buttons -----------------------------------
 const MESSAGE_SELECTORS = [
-    'div[data-testid="message"]', 'article', 'div[class*="assistant-response"]', 'gc-message', 'div[class*="response"]', 'div[class*="message"]'
+    'div[data-testid="message"]',
+    'article',
+    'div[class*="assistant-response"]',
+    'gc-message',
+    'div[class*="response"]',
+    'div[class*="message"]',
 ];
 const MESSAGE_CONTAINER_SELECTOR = MESSAGE_SELECTORS.join(',');
 const MIN_TEXT_LENGTH = 60;
@@ -1174,10 +1228,12 @@ const DISABLE_SAVE_BUTTONS = true;
 // If disabling, remove any previously injected save buttons that may exist in the page
 try {
     if (DISABLE_SAVE_BUTTONS) {
-        Array.from(document.querySelectorAll('.ia-save-btn')).forEach(n => { try {
-            n.remove();
-        }
-        catch (_) { } });
+        Array.from(document.querySelectorAll('.ia-save-btn')).forEach((n) => {
+            try {
+                n.remove();
+            }
+            catch (_) { }
+        });
     }
 }
 catch (_) { }
@@ -1199,7 +1255,7 @@ function makeSelectionButton() {
         borderRadius: '6px',
         boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
         cursor: 'pointer',
-        fontWeight: '600'
+        fontWeight: '600',
     });
     b.addEventListener('click', (ev) => {
         ev.stopPropagation();
@@ -1223,8 +1279,13 @@ function makeSelectionButton() {
             marker.style.overflow = 'hidden';
             range.insertNode(marker);
         }
-        catch (e) { /* ignore insertion errors */ }
-        safeSendMessage({ type: 'SAVE_CHAT_DATA', payload: { sourceId: id, messageText: txt, pageUrl: location.href } }, (r) => {
+        catch (e) {
+            /* ignore insertion errors */
+        }
+        safeSendMessage({
+            type: 'SAVE_CHAT_DATA',
+            payload: { sourceId: id, messageText: txt, pageUrl: location.href },
+        }, (r) => {
             try {
                 if (r && (r.ok || r.item)) {
                     b.textContent = __('saved', 'Guardado');
@@ -1242,7 +1303,10 @@ function makeSelectionButton() {
                 catch (_) { }
             }
             catch (_) { }
-            setTimeout(() => { hideSelectionButton(); b.textContent = __('save_selection', 'Guardar selección'); }, 900);
+            setTimeout(() => {
+                hideSelectionButton();
+                b.textContent = __('save_selection', 'Guardar selección');
+            }, 900);
         });
         s?.removeAllRanges();
     });
@@ -1299,7 +1363,7 @@ function isInteractive(el) {
 function findExistingSourceElement(sourceId) {
     const all = document.querySelectorAll('[data-source-id]');
     for (const el of Array.from(all)) {
-        const ds = (el.dataset || {});
+        const ds = el.dataset || {};
         if (ds.sourceId === sourceId)
             return el;
     }
@@ -1339,7 +1403,7 @@ function ensureMarkerForItem(item) {
         const norm = normalizeForSearch(text || '');
         if (!norm)
             return false;
-        return segments.some(seg => {
+        return segments.some((seg) => {
             if (!seg)
                 return false;
             if (seg.length >= 24)
@@ -1348,7 +1412,7 @@ function ensureMarkerForItem(item) {
             const words = seg.split(' ').filter(Boolean);
             if (!words.length)
                 return false;
-            return words.every(w => norm.includes(w));
+            return words.every((w) => norm.includes(w));
         });
     };
     const attachToElement = (el) => {
@@ -1372,7 +1436,9 @@ function ensureMarkerForItem(item) {
                     }
                 }
             }
-            catch (_) { /* ignore */ }
+            catch (_) {
+                /* ignore */
+            }
         }
     };
     gatherElements(MESSAGE_SELECTORS, document);
@@ -1396,11 +1462,15 @@ function ensureMarkerForItem(item) {
     for (const parent of orderedCandidates) {
         try {
             for (const child of Array.from(parent.querySelectorAll(subSelectorString))) {
-                if (child instanceof HTMLElement && !isInteractive(child) && !childCandidates.includes(child))
+                if (child instanceof HTMLElement &&
+                    !isInteractive(child) &&
+                    !childCandidates.includes(child))
                     childCandidates.push(child);
             }
         }
-        catch (_) { /* ignore */ }
+        catch (_) {
+            /* ignore */
+        }
     }
     if (tryCandidates(childCandidates))
         return;
@@ -1418,9 +1488,21 @@ function createFloatingButton(scope) {
     b.type = 'button';
     b.className = 'ia-save-btn';
     b.textContent = '💾';
-    Object.assign(b.style, { position: 'absolute', right: '0px', top: '6px', transform: 'translateX(100%)', padding: '4px 6px', fontSize: '12px', borderRadius: '6px', border: 'none', cursor: 'pointer', background: scope === 'message' ? '#2563eb' : '#7c3aed', color: '#fff' });
-    b.addEventListener('mouseenter', () => b.style.opacity = '1');
-    b.addEventListener('mouseleave', () => b.style.opacity = '0.92');
+    Object.assign(b.style, {
+        position: 'absolute',
+        right: '0px',
+        top: '6px',
+        transform: 'translateX(100%)',
+        padding: '4px 6px',
+        fontSize: '12px',
+        borderRadius: '6px',
+        border: 'none',
+        cursor: 'pointer',
+        background: scope === 'message' ? '#2563eb' : '#7c3aed',
+        color: '#fff',
+    });
+    b.addEventListener('mouseenter', () => (b.style.opacity = '1'));
+    b.addEventListener('mouseleave', () => (b.style.opacity = '0.92'));
     return b;
 }
 function injectInto(container) {
@@ -1439,7 +1521,6 @@ function injectInto(container) {
                 container.dataset.sourceId = sourceId;
             }
             catch { }
-            ;
         }
         // message-level button
         if (!container.querySelector('.ia-save-btn[data-scope="message"]')) {
@@ -1448,7 +1529,14 @@ function injectInto(container) {
             mb.addEventListener('click', (ev) => {
                 ev.stopPropagation();
                 mb.textContent = __('saving', 'Guardando...');
-                safeSendMessage({ type: 'SAVE_CHAT_DATA', payload: { sourceId, messageText: (container.textContent || '').trim(), pageUrl: location.href } }, (r) => {
+                safeSendMessage({
+                    type: 'SAVE_CHAT_DATA',
+                    payload: {
+                        sourceId,
+                        messageText: (container.textContent || '').trim(),
+                        pageUrl: location.href,
+                    },
+                }, (r) => {
                     try {
                         if (r && (r.ok || r.item)) {
                             mb.textContent = __('saved', 'Guardado');
@@ -1460,7 +1548,9 @@ function injectInto(container) {
                         loadSavedItemsForPage();
                     }
                     catch { }
-                    setTimeout(() => { mb.textContent = '💾'; }, 1000);
+                    setTimeout(() => {
+                        mb.textContent = '💾';
+                    }, 1000);
                 });
             });
             try {
@@ -1470,7 +1560,11 @@ function injectInto(container) {
             catch { }
         }
         // fragment candidates
-        const candidates = Array.from(container.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,blockquote,div')).filter(n => n instanceof HTMLElement && !injected.has(n) && !n.querySelector('.ia-save-btn') && (n.textContent || '').trim().length >= MIN_FRAGMENT_LENGTH && !isInteractive(n));
+        const candidates = Array.from(container.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,blockquote,div')).filter((n) => n instanceof HTMLElement &&
+            !injected.has(n) &&
+            !n.querySelector('.ia-save-btn') &&
+            (n.textContent || '').trim().length >= MIN_FRAGMENT_LENGTH &&
+            !isInteractive(n));
         for (const c of candidates) {
             injected.add(c);
             const fid = `${sourceId}::frag::${Date.now()}-${Math.floor(Math.random() * 10000)}`;
@@ -1484,8 +1578,10 @@ function injectInto(container) {
                     c.dataset.sourceId = fid;
                 }
                 catch { }
-                ;
-                safeSendMessage({ type: 'SAVE_CHAT_DATA', payload: { sourceId: fid, messageText: snippet, pageUrl: location.href } }, (r) => {
+                safeSendMessage({
+                    type: 'SAVE_CHAT_DATA',
+                    payload: { sourceId: fid, messageText: snippet, pageUrl: location.href },
+                }, (r) => {
                     try {
                         if (r && (r.ok || r.item)) {
                             fb.textContent = __('saved', 'Guardado');
@@ -1497,7 +1593,9 @@ function injectInto(container) {
                         loadSavedItemsForPage();
                     }
                     catch { }
-                    setTimeout(() => { fb.textContent = '💾'; }, 1000);
+                    setTimeout(() => {
+                        fb.textContent = '💾';
+                    }, 1000);
                 });
             });
             try {
@@ -1507,7 +1605,9 @@ function injectInto(container) {
             catch { }
         }
     }
-    catch (e) { /* ignore injection errors */ }
+    catch (e) {
+        /* ignore injection errors */
+    }
 }
 function scan(root) {
     for (const s of MESSAGE_SELECTORS) {
@@ -1520,13 +1620,13 @@ function scan(root) {
         }
         if (!nodes)
             continue;
-        nodes.forEach(n => {
+        nodes.forEach((n) => {
             if (n instanceof HTMLElement)
                 injectInto(n);
         });
     }
 }
-const observer = new MutationObserver(ms => {
+const observer = new MutationObserver((ms) => {
     let shouldEnsure = false;
     for (const m of ms) {
         for (const n of Array.from(m.addedNodes)) {
@@ -1586,7 +1686,9 @@ function patchHistoryMethod(method) {
             return result;
         };
     }
-    catch (_) { /* ignore */ }
+    catch (_) {
+        /* ignore */
+    }
 }
 patchHistoryMethod('pushState');
 patchHistoryMethod('replaceState');

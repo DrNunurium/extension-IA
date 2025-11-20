@@ -1,9 +1,16 @@
 const chromeApi = globalThis.chrome;
+const persistentStorage = chromeApi?.storage?.sync ?? chromeApi?.storage?.local;
 // Gemini API integration removed: mind-map generation is done locally now.
 // Keep a few no-op stubs to satisfy legacy helper references (these are unused).
-async function getModelName() { return 'models/text-bison-001'; }
-function buildEndpointForModel(_modelName, _apiKey) { return ''; }
-async function listModels(_apiKey) { return []; }
+async function getModelName() {
+    return 'models/text-bison-001';
+}
+function buildEndpointForModel(_modelName, _apiKey) {
+    return '';
+}
+async function listModels(_apiKey) {
+    return [];
+}
 if (!chromeApi?.runtime?.onMessage) {
     console.warn('Chrome runtime API is not available in this context.');
 }
@@ -23,7 +30,7 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                     structured.normalized_page = normalizePageUrl(pageUrl);
                     // persist
                     await new Promise((resolve, reject) => {
-                        chromeApi.storage.local.set({ [structured.source_id]: structured }, () => {
+                        persistentStorage.set({ [structured.source_id]: structured }, () => {
                             const err = chromeApi.runtime.lastError;
                             if (err) {
                                 console.error('Background: storage.set failed for', structured.source_id, err);
@@ -60,7 +67,7 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
             // a color from the active tab's <meta name="theme-color">. This is
             // best-effort and may return null.
             try {
-                chromeApi.storage.local.get(['panelAccentColor'], (data) => {
+                persistentStorage.get(['panelAccentColor'], (data) => {
                     try {
                         const stored = data && data.panelAccentColor ? String(data.panelAccentColor) : null;
                         if (stored) {
@@ -70,7 +77,7 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                         // No stored color; try to query active tab for theme-color
                         try {
                             chromeApi.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-                                const tab = (tabs && tabs.length) ? tabs[0] : null;
+                                const tab = tabs && tabs.length ? tabs[0] : null;
                                 if (!tab || typeof tab.id !== 'number') {
                                     sendResponse({ color: null });
                                     return;
@@ -87,10 +94,12 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                                             }
                                             catch (e) { }
                                             return null;
-                                        }
+                                        },
                                     }, (results) => {
                                         try {
-                                            const color = (Array.isArray(results) && results[0] && results[0].result) ? results[0].result : null;
+                                            const color = Array.isArray(results) && results[0] && results[0].result
+                                                ? results[0].result
+                                                : null;
                                             sendResponse({ color });
                                         }
                                         catch (e) {
@@ -139,11 +148,12 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                             // To avoid TypeScript window typings when this function is serialized,
                             // treat the page window as any at runtime.
                             const pw = window;
-                            function sanitizeTex(s) {
-                                if (typeof s !== 'string')
-                                    return s;
+                            const sanitizeTex = (value) => {
+                                if (typeof value !== 'string') {
+                                    return value == null ? '' : String(value);
+                                }
                                 try {
-                                    let out = String(s);
+                                    let out = value;
                                     const chars = ['€', '£', '¥', '•', '–', '—', '…', '←', '→', '↑', '↓'];
                                     for (const ch of chars) {
                                         out = out.split(ch).join(bs + 'text{' + ch + '}');
@@ -155,10 +165,10 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                                     return out;
                                 }
                                 catch (e) {
-                                    return s;
+                                    return value;
                                 }
-                            }
-                            function patchKatex() {
+                            };
+                            const patchKatex = () => {
                                 try {
                                     if (pw.katex && typeof pw.katex.render === 'function') {
                                         const orig = pw.katex.render;
@@ -180,8 +190,8 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                                     }
                                 }
                                 catch (e) { }
-                            }
-                            function patchMathJax() {
+                            };
+                            const patchMathJax = () => {
                                 try {
                                     if (pw.MathJax) {
                                         if (typeof pw.MathJax.typesetPromise === 'function') {
@@ -189,8 +199,10 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                                             pw.MathJax.typesetPromise = function (elements) {
                                                 try {
                                                     const scripts = document.querySelectorAll('script[type^="math/tex"]');
-                                                    scripts.forEach(s => { if (s.textContent)
-                                                        s.textContent = sanitizeTex(s.textContent); });
+                                                    scripts.forEach((s) => {
+                                                        if (s.textContent)
+                                                            s.textContent = sanitizeTex(s.textContent);
+                                                    });
                                                 }
                                                 catch (e) { }
                                                 return orig.call(this, elements);
@@ -198,31 +210,37 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                                         }
                                         if (pw.MathJax.Hub && pw.MathJax.Hub.Queue) {
                                             const origQ = pw.MathJax.Hub.Queue;
-                                            pw.MathJax.Hub.Queue = function () {
+                                            pw.MathJax.Hub.Queue = function (...args) {
                                                 try {
                                                     const scripts = document.querySelectorAll('script[type^="math/tex"]');
-                                                    scripts.forEach(s => { if (s.textContent)
-                                                        s.textContent = sanitizeTex(s.textContent); });
+                                                    scripts.forEach((s) => {
+                                                        if (s.textContent)
+                                                            s.textContent = sanitizeTex(s.textContent);
+                                                    });
                                                 }
                                                 catch (e) { }
-                                                return origQ.apply(this, arguments);
+                                                return origQ.apply(this, args);
                                             };
                                         }
                                     }
                                 }
                                 catch (e) { }
-                            }
+                            };
                             patchKatex();
                             patchMathJax();
-                            const iv = setInterval(() => { try {
-                                patchKatex();
-                                patchMathJax();
-                            }
-                            catch (e) { } }, 1000);
+                            const iv = setInterval(() => {
+                                try {
+                                    patchKatex();
+                                    patchMathJax();
+                                }
+                                catch (e) { }
+                            }, 1000);
                             setTimeout(() => clearInterval(iv), 30000);
                         }
-                        catch (e) { /* ignore */ }
-                    }
+                        catch (e) {
+                            /* ignore */
+                        }
+                    },
                 }, (results) => {
                     try {
                         // If executeScript failed, results may be undefined
@@ -292,11 +310,11 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                 return;
             (async () => {
                 try {
-                    const itemData = await new Promise((resolve) => chromeApi.storage.local.get([sid], resolve));
+                    const itemData = await new Promise((resolve) => persistentStorage.get([sid], resolve));
                     const pageUrl = itemData?.[sid]?.pageUrl;
                     const normalized = itemData?.[sid]?.normalized_page;
                     await new Promise((resolve, reject) => {
-                        chromeApi.storage.local.remove([sid], () => {
+                        persistentStorage.remove([sid], () => {
                             const err = chromeApi.runtime.lastError;
                             if (err)
                                 return reject(err);
@@ -319,7 +337,7 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
         case 'CLEAR_ALL_SAVED': {
             (async () => {
                 try {
-                    const data = await new Promise((resolve) => chromeApi.storage.local.get(null, resolve));
+                    const data = await new Promise((resolve) => persistentStorage.get(null, resolve));
                     const keysToRemove = [];
                     for (const [k, v] of Object.entries(data)) {
                         if (k === 'groupsIndex' || k === 'mindMaps') {
@@ -330,7 +348,7 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                         }
                     }
                     await new Promise((resolve, reject) => {
-                        chromeApi.storage.local.remove(keysToRemove, () => {
+                        persistentStorage.remove(keysToRemove, () => {
                             const err = chromeApi.runtime.lastError;
                             if (err)
                                 return reject(err);
@@ -338,7 +356,7 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                         });
                     });
                     await new Promise((resolve, reject) => {
-                        chromeApi.storage.local.set({ groupsIndex: {}, mindMaps: {} }, () => {
+                        persistentStorage.set({ groupsIndex: {}, mindMaps: {} }, () => {
                             const err = chromeApi.runtime.lastError;
                             if (err)
                                 return reject(err);
@@ -362,7 +380,10 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                     if (map)
                         sendResponse({ ok: true, map });
                     else
-                        sendResponse({ ok: false, error: 'No hay datos suficientes o falta la clave de API.' });
+                        sendResponse({
+                            ok: false,
+                            error: 'No hay datos suficientes o falta la clave de API.',
+                        });
                 }
                 catch (e) {
                     console.error('GENERATE_MIND_MAP failed', e);
@@ -378,7 +399,7 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                 return;
             (async () => {
                 try {
-                    const data = await new Promise((resolve) => chromeApi.storage.local.get(null, resolve));
+                    const data = await new Promise((resolve) => persistentStorage.get(null, resolve));
                     const toRemove = [];
                     const normalizedPages = new Set();
                     const low = pattern.toLowerCase();
@@ -401,7 +422,7 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                         return;
                     }
                     await new Promise((resolve, reject) => {
-                        chromeApi.storage.local.remove(toRemove, () => {
+                        persistentStorage.remove(toRemove, () => {
                             const err = chromeApi.runtime.lastError;
                             if (err)
                                 return reject(err);
@@ -419,7 +440,9 @@ chromeApi?.runtime?.onMessage.addListener((message, sender, sendResponse) => {
                         try {
                             await generateMindMapForPage(typeof np === 'string' ? np : undefined);
                         }
-                        catch (e) { /* ignore */ }
+                        catch (e) {
+                            /* ignore */
+                        }
                     }
                     sendResponse({ ok: true, removed: toRemove.length, keys: toRemove });
                 }
@@ -445,7 +468,9 @@ function normalizePageUrl(url) {
         // Canonicalize search params (sorted order) so SPA routes relying on query
         // segments are stable per conversation.
         const params = [];
-        parsed.searchParams.forEach((value, key) => { params.push([key, value]); });
+        parsed.searchParams.forEach((value, key) => {
+            params.push([key, value]);
+        });
         params.sort((a, b) => {
             if (a[0] === b[0]) {
                 if (a[1] === b[1])
@@ -466,7 +491,7 @@ function normalizePageUrl(url) {
     }
 }
 async function getAllSavedItems() {
-    const allData = await new Promise((resolve) => chromeApi.storage.local.get(null, resolve));
+    const allData = await new Promise((resolve) => persistentStorage.get(null, resolve));
     const items = [];
     for (const value of Object.values(allData)) {
         if (value && typeof value === 'object' && value.source_id) {
@@ -489,12 +514,30 @@ async function saveDataWithGemini(messageText, sourceId, pageUrl, paragraphIndex
         original_text: messageText,
         pageUrl: pageUrl || null,
         paragraphIndex: typeof paragraphIndex === 'number' ? paragraphIndex : null,
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
     };
 }
 async function rebuildGroupsIndex() {
     const items = await getAllSavedItems();
-    const stopwords = new Set(['the', 'and', 'or', 'de', 'la', 'el', 'y', 'a', 'en', 'para', 'con', 'que', 'is', 'of', 'to', 'as', 'it']);
+    const stopwords = new Set([
+        'the',
+        'and',
+        'or',
+        'de',
+        'la',
+        'el',
+        'y',
+        'a',
+        'en',
+        'para',
+        'con',
+        'que',
+        'is',
+        'of',
+        'to',
+        'as',
+        'it',
+    ]);
     const groups = {};
     function extractKeywords(text) {
         return (text || '')
@@ -524,7 +567,7 @@ async function rebuildGroupsIndex() {
         }
     }
     await new Promise((resolve, reject) => {
-        chromeApi.storage.local.set({ groupsIndex: groups }, () => {
+        persistentStorage.set({ groupsIndex: groups }, () => {
             const err = chromeApi.runtime.lastError;
             if (err)
                 return reject(err);
@@ -542,7 +585,29 @@ async function generateMindMapForPage(pageUrl, preNormalized) {
     if (!relevant.length)
         return null;
     // Build a token frequency map from titles, summaries and text
-    const stopwords = new Set(['the', 'and', 'or', 'de', 'la', 'el', 'y', 'a', 'en', 'para', 'con', 'que', 'is', 'of', 'to', 'as', 'it', 'un', 'una', 'los', 'las']);
+    const stopwords = new Set([
+        'the',
+        'and',
+        'or',
+        'de',
+        'la',
+        'el',
+        'y',
+        'a',
+        'en',
+        'para',
+        'con',
+        'que',
+        'is',
+        'of',
+        'to',
+        'as',
+        'it',
+        'un',
+        'una',
+        'los',
+        'las',
+    ]);
     const counts = {};
     for (const it of relevant) {
         const text = `${String(it.title || '')} ${String(it.summary || '')} ${String(it.original_text || '')}`.toLowerCase();
@@ -557,7 +622,9 @@ async function generateMindMapForPage(pageUrl, preNormalized) {
     }
     const sorted = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
     const conceptos = sorted.slice(0, 5);
-    const titulo_central = conceptos.length ? (conceptos[0].slice(0, 50)) : (relevant[0].title || 'Resumen');
+    const titulo_central = conceptos.length
+        ? conceptos[0].slice(0, 50)
+        : relevant[0].title || 'Resumen';
     // Build a short executive summary by joining the first sentences of saved summaries/texts
     const sentences = [];
     for (const it of relevant) {
@@ -580,14 +647,18 @@ async function generateMindMapForPage(pageUrl, preNormalized) {
     const map = {
         titulo_central: titulo_central || 'Resumen',
         conceptos_clave: conceptos.length ? conceptos : ['general'],
-        resumen_ejecutivo: resumen || 'Resumen de los elementos guardados.'
+        resumen_ejecutivo: resumen || 'Resumen de los elementos guardados.',
     };
     try {
-        const existing = await new Promise((resolve) => chromeApi.storage.local.get(['mindMaps'], resolve));
+        const existing = await new Promise((resolve) => persistentStorage.get(['mindMaps'], resolve));
         const maps = existing?.mindMaps || {};
-        maps[normalized] = { data: map, updated_at: new Date().toISOString(), pageUrl: pageUrl || relevant[0].pageUrl || null };
+        maps[normalized] = {
+            data: map,
+            updated_at: new Date().toISOString(),
+            pageUrl: pageUrl || relevant[0].pageUrl || null,
+        };
         await new Promise((resolve, reject) => {
-            chromeApi.storage.local.set({ mindMaps: maps }, () => {
+            persistentStorage.set({ mindMaps: maps }, () => {
                 const err = chromeApi.runtime.lastError;
                 if (err)
                     return reject(err);
@@ -603,7 +674,7 @@ async function generateMindMapForPage(pageUrl, preNormalized) {
     }
 }
 async function getApiKey() {
-    const data = await new Promise((resolve) => chromeApi.storage.local.get(['geminiApiKey'], resolve));
+    const data = await new Promise((resolve) => persistentStorage.get(['geminiApiKey'], resolve));
     const key = data?.geminiApiKey;
     if (typeof key === 'string' && key.trim())
         return key.trim();
@@ -660,16 +731,19 @@ function scheduleHighlightForTab(tabId, sourceId, callback) {
                             if (!el)
                                 el = document.querySelector(altSelector);
                             if (!el) {
-                                el = Array.from(document.querySelectorAll('*')).find((e) => {
-                                    const ds = e.dataset;
-                                    return ds && (ds.sourceId === sid || ds.messageId === sid);
-                                }) || null;
+                                el =
+                                    Array.from(document.querySelectorAll('*')).find((e) => {
+                                        const ds = e.dataset;
+                                        return ds && (ds.sourceId === sid || ds.messageId === sid);
+                                    }) || null;
                             }
                             if (el) {
                                 el.scrollIntoView({ behavior: 'smooth', block: 'center' });
                                 const prev = el.style.outline;
                                 el.style.outline = '3px solid #ffb86b';
-                                setTimeout(() => { el.style.outline = prev; }, 4000);
+                                setTimeout(() => {
+                                    el.style.outline = prev;
+                                }, 4000);
                                 return true;
                             }
                             return false;
@@ -679,7 +753,7 @@ function scheduleHighlightForTab(tabId, sourceId, callback) {
                             return false;
                         }
                     },
-                    args: [sourceId]
+                    args: [sourceId],
                 }, () => {
                     const execErr = chromeApi.runtime.lastError;
                     if (execErr) {
@@ -739,7 +813,9 @@ function tryOpenInNewTab(pageUrl, sourceId) {
                 return;
             if (changeInfo.status === 'complete') {
                 chromeApi.tabs.onUpdated.removeListener(listener);
-                scheduleHighlightForTab(tabId, sourceId, () => { });
+                scheduleHighlightForTab(tabId, sourceId, () => {
+                    /* ignore result */
+                });
             }
         };
         chromeApi.tabs.onUpdated.addListener(listener);
@@ -754,9 +830,9 @@ async function runStartupSavedTextCleanup() {
             // Primary short identifier (will match partials)
             'Método para navegación rápida en conversación',
             // Full block (in case saved verbatim)
-            `Método para navegación rápida en conversación\nConceptos clave\nMétodo\nFacilitar usuario\nVolver a conversación\nNavegación rápida\nDividir tarea\nTres fases\nResumen ejecutivo\nSe presenta un método para que el usuario pueda regresar rápidamente a secciones previas de una conversación. La tarea se estructura en tres fases para optimizar la navegación y la experiencia del usuario.`
+            `Método para navegación rápida en conversación\nConceptos clave\nMétodo\nFacilitar usuario\nVolver a conversación\nNavegación rápida\nDividir tarea\nTres fases\nResumen ejecutivo\nSe presenta un método para que el usuario pueda regresar rápidamente a secciones previas de una conversación. La tarea se estructura en tres fases para optimizar la navegación y la experiencia del usuario.`,
         ];
-        const allData = await new Promise((resolve) => chromeApi.storage.local.get(null, resolve));
+        const allData = await new Promise((resolve) => persistentStorage.get(null, resolve));
         const toRemove = [];
         const affectedPages = new Set();
         for (const [k, v] of Object.entries(allData)) {
@@ -788,7 +864,7 @@ async function runStartupSavedTextCleanup() {
             return;
         }
         await new Promise((resolve, reject) => {
-            chromeApi.storage.local.remove(toRemove, () => {
+            persistentStorage.remove(toRemove, () => {
                 const err = chromeApi.runtime.lastError;
                 if (err)
                     return reject(err);

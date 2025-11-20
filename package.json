@@ -5,13 +5,21 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "generate-icons": "node scripts/generate-icons.js"
+    "generate-icons": "node scripts/generate-icons.js",
+    "lint": "eslint \"src/**/*.{js,ts}\" --ext .js,.ts",
+    "lint:fix": "eslint \"src/**/*.{js,ts}\" --ext .js,.ts --fix"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.183",
     "@types/d3": "^7.4.3",
-    "typescript": "^5.4.2",
-    "sharp": "^0.32.0"
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "eslint": "^8.57.1",
+    "eslint-config-prettier": "^9.1.2",
+    "eslint-plugin-prettier": "^5.5.4",
+    "prettier": "^3.6.2",
+    "sharp": "^0.32.0",
+    "typescript": "^5.4.2"
   },
   "dependencies": {
     "d3": "^7.9.0"

@@ -5,13 +5,14 @@ function showStatus(message, isError = false) {
     status.textContent = message;
     status.className = isError ? 'error' : '';
 }
+const syncStorageArea = chrome?.storage?.sync ?? chrome?.storage?.local;
 document.addEventListener('DOMContentLoaded', () => {
     const input = document.getElementById('apiKey');
     const form = document.getElementById('apiKeyForm');
     const clearBtn = document.getElementById('clearKey');
     if (!input || !form || !clearBtn)
         return;
-    chrome.storage.local.get(['geminiApiKey'], (data) => {
+    syncStorageArea?.get(['geminiApiKey'], (data) => {
         const key = data?.geminiApiKey || '';
         input.value = key;
         if (key)
@@ -24,7 +25,7 @@ document.addEventListener('DOMContentLoaded', () => {
             showStatus('Introduce una clave válida.', true);
             return;
         }
-        chrome.storage.local.set({ geminiApiKey: value }, () => {
+        syncStorageArea?.set({ geminiApiKey: value }, () => {
             if (chrome.runtime.lastError) {
                 showStatus(`Error al guardar: ${chrome.runtime.lastError.message}`, true);
                 return;
@@ -33,7 +34,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
     clearBtn.addEventListener('click', () => {
-        chrome.storage.local.remove(['geminiApiKey'], () => {
+        syncStorageArea?.remove(['geminiApiKey'], () => {
             if (chrome.runtime.lastError) {
                 showStatus(`Error al borrar: ${chrome.runtime.lastError.message}`, true);
                 return;

@@ -3,7 +3,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // i18n helper
     function __(key, fallback) {
         try {
-            if (window.chrome && chrome.i18n && typeof chrome.i18n.getMessage === 'function') {
+            if (window.chrome &&
+                chrome.i18n &&
+                typeof chrome.i18n.getMessage === 'function') {
                 const m = chrome.i18n.getMessage(key);
                 if (m)
                     return m;
@@ -40,7 +42,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                         if (statusDiv)
                                             statusDiv.textContent = __('cannot_show_tab', 'No se puede mostrar el panel en esta pestaña.');
                                         if (actionsDiv)
-                                            actionsDiv.innerHTML = '<button id="closePopup">' + __('close', 'Cerrar') + '</button>';
+                                            actionsDiv.innerHTML =
+                                                '<button id="closePopup">' + __('close', 'Cerrar') + '</button>';
                                         const closeBtn = document.getElementById('closePopup');
                                         if (closeBtn)
                                             closeBtn.addEventListener('click', () => window.close());
@@ -62,7 +65,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                             if (statusDiv)
                                                 statusDiv.textContent = __('panel_opened', 'Panel abierto en esta pestaña.');
                                             if (actionsDiv) {
-                                                actionsDiv.innerHTML = '<button id="closePopup">' + __('close', 'Cerrar') + '</button>';
+                                                actionsDiv.innerHTML =
+                                                    '<button id="closePopup">' + __('close', 'Cerrar') + '</button>';
                                                 const closeBtn2 = document.getElementById('closePopup');
                                                 if (closeBtn2)
                                                     closeBtn2.addEventListener('click', () => window.close());
@@ -82,7 +86,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (statusDiv)
                             statusDiv.textContent = __('panel_opened', 'Panel abierto en esta pestaña.');
                         if (actionsDiv) {
-                            actionsDiv.innerHTML = '<button id="closePopup">' + __('close', 'Cerrar') + '</button>';
+                            actionsDiv.innerHTML =
+                                '<button id="closePopup">' + __('close', 'Cerrar') + '</button>';
                             const closeBtn = document.getElementById('closePopup');
                             if (closeBtn)
                                 closeBtn.addEventListener('click', () => window.close());
@@ -96,7 +101,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (statusDiv)
                             statusDiv.textContent = __('opened_in_new_tab', 'Se abrió el panel en una nueva pestaña.');
                         if (actionsDiv) {
-                            actionsDiv.innerHTML = '<button id="closePopup">' + __('close', 'Cerrar') + '</button>';
+                            actionsDiv.innerHTML =
+                                '<button id="closePopup">' + __('close', 'Cerrar') + '</button>';
                             const closeBtn = document.getElementById('closePopup');
                             if (closeBtn)
                                 closeBtn.addEventListener('click', () => window.close());
